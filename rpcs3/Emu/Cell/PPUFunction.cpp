@@ -403,7 +403,6 @@ extern std::string ppu_get_function_name(const std::string& _module, u32 fnid)
 	case 0xb17b79d0: return "isalpha";
 	case 0xb18cc115: return "freopen";
 	case 0xb1cc43e3: return "_CStrftime";
-	case 0xb1f4779d: return "spu_thread_printf";
 	case 0xb24cb8d6: return "_Locterm";
 	case 0xb2702e15: return "wcrtomb";
 	case 0xb2748a9f: return "_Freeloc";
