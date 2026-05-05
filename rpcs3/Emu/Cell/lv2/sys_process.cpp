@@ -3,6 +3,7 @@
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/System.h"
 #include "Emu/VFS.h"
+#include "Emu/vfs_config.h"
 #include "Emu/IdManager.h"
 
 #include "Crypto/unedat.h"
@@ -348,11 +349,58 @@ void _sys_process_exit(ppu_thread& ppu, s32 status, u32 arg2, u32 arg3)
 
 	sys_process.warning("_sys_process_exit(status=%d, arg2=0x%x, arg3=0x%x)", status, arg2, arg3);
 
-	Emu.CallFromMainThread([]()
+	// One-shot consumption: if this process belongs to a VSH-rooted boot chain, relaunch VSH
+	// after the kill instead of stopping emulation. VSH itself never sets the flag for itself
+	// (it's set by lv2_exitspawn for downstream processes), so VSH shutting down still stops.
+	const bool boot_vsh_after_exit = Emu.IsLaunchedFromVsh();
+
+	sys_process.success("[VSH] _sys_process_exit: launched_from_vsh=%d, will_boot_vsh=%d", static_cast<int>(boot_vsh_after_exit), static_cast<int>(boot_vsh_after_exit));
+
+	Emu.CallFromMainThread([boot_vsh_after_exit]()
 	{
 		sys_process.success("Process finished");
 		signal_system_cache_can_stay();
-		Emu.Kill();
+
+		sys_process.success("[VSH] _sys_process_exit (main thread): boot_vsh_after_exit=%d", static_cast<int>(boot_vsh_after_exit));
+
+		if (boot_vsh_after_exit)
+		{
+			// Clear the flag so the VSH boot chain restarts cleanly. BootGame() also clears it
+			// for non-continuous boots, but be explicit here.
+			Emu.SetLaunchedFromVsh(false);
+
+			Emu.after_kill_callback = []()
+			{
+				sys_process.success("[VSH] after_kill_callback firing — booting VSH");
+
+				Emu.argv.clear();
+				Emu.envp.clear();
+				Emu.data.clear();
+				Emu.disc.clear();
+				Emu.hdd1.clear();
+				Emu.klic.clear();
+				Emu.init_mem_containers = nullptr;
+
+				Emu.SetForceBoot(true);
+
+				const std::string vsh_path = g_cfg_vfs.get_dev_flash() + "/vsh/module/vsh.self";
+				const auto res = Emu.BootGame(vsh_path, "", true, cfg_mode::continuous);
+
+				sys_process.success("[VSH] BootGame(vsh.self) returned: %s", res);
+
+				if (res != game_boot_result::no_errors)
+				{
+					sys_process.fatal("Failed to relaunch VSH after game exit (path=\"%s\", error=%s)", vsh_path, res);
+				}
+			};
+
+			Emu.SetContinuousMode(true);
+			Emu.Kill(false);
+		}
+		else
+		{
+			Emu.Kill();
+		}
 	});
 
 	// Wait for GUI thread
@@ -415,7 +463,12 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 	// sys_sm_shutdown
 	const bool is_real_reboot = (ppu.gpr[11] == 379);
 
-	Emu.CallFromMainThread([is_real_reboot, argv = std::move(argv), envp = std::move(envp), data = std::move(data)]() mutable
+	// Capture VSH-rooted state before Kill destroys per-process state. Either we are VSH itself
+	// launching a downstream process (e.g. a game from XMB), or we are already in a VSH-rooted
+	// chain (game→game exitspawn) and need to keep the flag sticky.
+	const bool is_from_vsh = Emu.IsVsh() || Emu.IsLaunchedFromVsh();
+
+	Emu.CallFromMainThread([is_real_reboot, is_from_vsh, argv = std::move(argv), envp = std::move(envp), data = std::move(data)]() mutable
 	{
 		sys_process.success("Process finished -> %s", argv[0]);
 
@@ -472,7 +525,7 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			ensure(g_fxo->init<lv2_memory_container>(std::min(old_size - total_size, sdk_suggested_mem) + total_size));
 		};
 
-		Emu.after_kill_callback = [func = std::move(func), argv = std::move(argv), envp = std::move(envp), data = std::move(data),
+		Emu.after_kill_callback = [is_from_vsh, func = std::move(func), argv = std::move(argv), envp = std::move(envp), data = std::move(data),
 			disc = std::move(disc), path = std::move(path), hdd1 = std::move(hdd1), old_config = Emu.GetUsedConfig(), old_db_config = Emu.GetUsedDatabaseConfig(), klic]() mutable
 		{
 			Emu.argv = std::move(argv);
@@ -494,6 +547,17 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			if (res != game_boot_result::no_errors)
 			{
 				sys_process.fatal("Failed to boot from exitspawn! (path=\"%s\", error=%s)", path, res);
+			}
+			else if (is_from_vsh)
+			{
+				// BootGame() resets the flag on non-continuous boots only; we are continuous,
+				// but set explicitly to make the propagation obvious and avoid coupling.
+				Emu.SetLaunchedFromVsh(true);
+				sys_process.success("[VSH] lv2_exitspawn: marked %s as launched-from-VSH (IsLaunchedFromVsh=%d)", path, static_cast<int>(Emu.IsLaunchedFromVsh()));
+			}
+			else
+			{
+				sys_process.success("[VSH] lv2_exitspawn: NOT marking %s as VSH-rooted (is_from_vsh=false)", path);
 			}
 		};
 
@@ -525,10 +589,126 @@ void sys_process_exit3(ppu_thread& ppu, s32 status)
 	return _sys_process_exit(ppu, status, 0, 0);
 }
 
-error_code sys_process_spawns_a_self2(vm::ptr<u32> pid, u32 primary_prio, u64 flags, vm::ptr<void> stack, u32 stack_size, u32 mem_id, vm::ptr<void> param_sfo, vm::ptr<void> dbg_data)
+error_code sys_process_spawns_a_self2(ppu_thread& ppu, vm::ptr<u32> pid, u32 primary_prio, u64 flags, vm::ptr<void> stack, u32 stack_size, u32 mem_id, vm::ptr<void> param_sfo, vm::ptr<void> dbg_data)
 {
-	sys_process.todo("sys_process_spawns_a_self2(pid=*0x%x, primary_prio=0x%x, flags=0x%llx, stack=*0x%x, stack_size=0x%x, mem_id=0x%x, param_sfo=*0x%x, dbg_data=*0x%x"
+	sys_process.warning("sys_process_spawns_a_self2(pid=*0x%x, primary_prio=0x%x, flags=0x%llx, stack=*0x%x, stack_size=0x%x, mem_id=0x%x, param_sfo=*0x%x, dbg_data=*0x%x)"
 		, pid, primary_prio, flags, stack, stack_size, mem_id, param_sfo, dbg_data);
+
+	// Hex+ASCII dump of an opaque buffer to discover the SELF path encoding.
+	auto dump_buffer = [](const char* name, u32 addr, u32 size)
+	{
+		if (!addr || !size)
+		{
+			sys_process.warning("  %s: <null or empty>", name);
+			return;
+		}
+
+		const u8* data = static_cast<const u8*>(vm::base(addr));
+
+		for (u32 row = 0; row < size; row += 16)
+		{
+			std::string hex;
+			std::string ascii;
+			const u32 row_len = std::min<u32>(16, size - row);
+
+			for (u32 i = 0; i < row_len; i++)
+			{
+				const u8 b = data[row + i];
+				fmt::append(hex, "%02x ", b);
+				ascii += (b >= 0x20 && b < 0x7f) ? static_cast<char>(b) : '.';
+			}
+
+			while (hex.size() < 48) hex += ' ';
+			sys_process.warning("  %s @ 0x%08x +0x%04x: %s| %s", name, addr, row, hex, ascii);
+		}
+	};
+
+	dump_buffer("stack    ", stack.addr(), stack_size);
+	dump_buffer("param_sfo", param_sfo.addr(), 0x200);
+	dump_buffer("dbg_data ", dbg_data.addr(), 0x200);
+
+	// Heuristic path extraction: scan all three buffers for a NUL-terminated ASCII string
+	// that begins with "/dev_" and looks like a SELF/EBOOT path. Real PS3 firmware encodes
+	// the spawn target inside one of these structs; without official docs we look for it.
+	auto find_path = [](u32 addr, u32 size) -> std::string
+	{
+		if (!addr || !size) return {};
+
+		const u8* data = static_cast<const u8*>(vm::base(addr));
+
+		for (u32 i = 0; i + 5 < size; i++)
+		{
+			if (std::memcmp(data + i, "/dev_", 5) != 0) continue;
+
+			// Found a candidate; copy until NUL or first non-printable.
+			std::string s;
+			for (u32 j = i; j < size && data[j] && data[j] >= 0x20 && data[j] < 0x7f && s.size() < 0x200; j++)
+			{
+				s += static_cast<char>(data[j]);
+			}
+
+			// Plausibility filter: must look like a SELF/EBOOT/SPRX path.
+			if (s.ends_with(".BIN") || s.ends_with(".bin") || s.ends_with(".SELF") || s.ends_with(".self") || s.ends_with(".SPRX") || s.ends_with(".sprx"))
+			{
+				return s;
+			}
+		}
+
+		return {};
+	};
+
+	std::string vfs_path = find_path(stack.addr(), stack_size);
+	if (vfs_path.empty()) vfs_path = find_path(dbg_data.addr(), 0x200);
+	if (vfs_path.empty()) vfs_path = find_path(param_sfo.addr(), 0x200);
+
+	if (vfs_path.empty())
+	{
+		sys_process.warning("sys_process_spawns_a_self2: no SELF path found in any buffer");
+		if (pid) *pid = 0;
+		return CELL_OK;
+	}
+
+	sys_process.success("sys_process_spawns_a_self2: target path = %s", vfs_path);
+
+	// sys_process_spawns_a_self2 has two very different real-world uses on PS3:
+	//   1. VSH spawns *helper* SELFs (/dev_flash/vsh/module/mcore.self etc.) as child
+	//      processes that run alongside VSH. We can't model these without true multi-process
+	//      support — exitspawn'ing them kills VSH and creates an infinite respawn loop. Stub.
+	//   2. VSH spawns a *game* (/dev_hdd0/game/<TID>/USRDIR/EBOOT.BIN or the disc EBOOT).
+	//      Semantically the game replaces VSH from the user's perspective, so we route this
+	//      through lv2_exitspawn — same machinery as sys_game_process_exitspawn.
+	//
+	// The path is the most reliable discriminator. Helper prio is 0x7d6, game prio is 0x3e9,
+	// but trusting the path keeps the heuristic robust against unrelated low-prio game spawns.
+	const bool is_game_launch =
+		(vfs_path.starts_with("/dev_hdd0/game/") && vfs_path.ends_with("/USRDIR/EBOOT.BIN")) ||
+		vfs_path == "/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN";
+
+	if (!is_game_launch)
+	{
+		sys_process.warning("sys_process_spawns_a_self2: not a game launch path, ignoring (helper SELF — would need multi-process support to spawn as child)");
+		if (pid) *pid = 0;
+		return CELL_OK;
+	}
+
+	const std::string host_path = vfs::get(vfs_path);
+
+	if (host_path.empty() || !fs::is_file(host_path))
+	{
+		sys_process.error("sys_process_spawns_a_self2: game EBOOT.BIN does not exist (vfs=%s, host=%s)", vfs_path, host_path);
+		if (pid) *pid = 0;
+		return CELL_OK;
+	}
+
+	sys_process.success("sys_process_spawns_a_self2: launching game %s (replacing VSH)", vfs_path);
+
+	std::vector<std::string> argv = { vfs_path };
+	std::vector<std::string> envp;
+	std::vector<u8> data;
+
+	if (pid) *pid = 1; // Caller may pass this to wait_for_child; placeholder is fine.
+
+	lv2_exitspawn(ppu, argv, envp, data);
 
 	return CELL_OK;
 }

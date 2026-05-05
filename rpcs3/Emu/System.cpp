@@ -987,6 +987,14 @@ game_boot_result Emulator::BootGame(const std::string& path, const std::string& 
 	m_config_path = config_path;
 	m_db_config = db_config;
 
+	// A fresh (non-continuous) boot breaks any prior VSH chain — e.g. user manually starts
+	// a game from the GUI instead of from XMB. Continuous boots (exitspawn) re-set the flag
+	// in lv2_exitspawn's after_kill_callback when appropriate.
+	if (config_mode != cfg_mode::continuous)
+	{
+		m_launched_from_vsh = false;
+	}
+
 	// Handle files and special paths inside Load unmodified
 	if (direct || !fs::is_dir(path) || fs::get_optical_raw_device(path))
 	{

@@ -174,6 +174,12 @@ class Emulator final
 	bool m_has_gui = true;
 	bool m_add_database_config = false;
 
+	// True when the currently running process belongs to a boot chain rooted in VSH (the XMB).
+	// Set by lv2_exitspawn after a successful BootGame whose source process was VSH (or already
+	// VSH-rooted via a previous exitspawn). Reset by BootGame for non-continuous boots.
+	// Consumed by _sys_process_exit to decide whether to relaunch VSH on game exit.
+	bool m_launched_from_vsh = false;
+
 	bool m_state_inspection_savestate = false;
 
 	usz m_tty_file_init_pos = umax;
@@ -390,6 +396,16 @@ public:
 			return std::exchange(m_continuous_mode, false);
 		}
 		return m_continuous_mode;
+	}
+
+	bool IsLaunchedFromVsh() const
+	{
+		return m_launched_from_vsh;
+	}
+
+	void SetLaunchedFromVsh(bool v)
+	{
+		m_launched_from_vsh = v;
 	}
 
 	class emulation_state_guard_t

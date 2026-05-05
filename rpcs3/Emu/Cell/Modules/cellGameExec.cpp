@@ -1,7 +1,9 @@
 #include "stdafx.h"
 #include "Emu/Cell/PPUModule.h"
+#include "Emu/Cell/lv2/sys_process.h"
 #include "Emu/IdManager.h"
 #include "Emu/System.h"
+#include "Emu/VFS.h"
 
 #include "cellGame.h"
 
@@ -76,9 +78,61 @@ error_code cellGameGetHomeLaunchOptionPath(vm::ptr<char> commonPath, vm::ptr<cha
 	return CELL_GAME_ERROR_NOAPP;
 }
 
-error_code cellGameExecGame(u32 type, vm::ptr<char> dirName, u32 options, u32 memContainer, u32 execData, u32 userData)
+error_code cellGameExecGame(ppu_thread& ppu, u32 type, vm::ptr<char> dirName, u32 options, u32 memContainer, u32 execData, u32 userData)
 {
-	cellGameExec.todo("cellGameExecGame(type=0x%x, dirName=%s, options=0x%x, memContainer=0x%x, execData=0x%x, userData=0x%x)", type, dirName, options, memContainer, execData, userData);
+	cellGameExec.warning("cellGameExecGame(type=0x%x, dirName=%s, options=0x%x, memContainer=0x%x, execData=0x%x, userData=0x%x)", type, dirName, options, memContainer, execData, userData);
+
+	if (type != CELL_GAME_GAMETYPE_HDD && type != CELL_GAME_GAMETYPE_DISC)
+	{
+		return CELL_GAME_ERROR_PARAM;
+	}
+
+	std::string dir_name;
+
+	if (dirName)
+	{
+		dir_name = dirName.get_ptr();
+
+		if (dir_name.size() >= CELL_GAME_DIRNAME_SIZE)
+		{
+			return CELL_GAME_ERROR_PARAM;
+		}
+	}
+	else if (type == CELL_GAME_GAMETYPE_HDD)
+	{
+		// HDD games require a directory name
+		return CELL_GAME_ERROR_PARAM;
+	}
+
+	std::string vfs_path;
+
+	if (type == CELL_GAME_GAMETYPE_HDD)
+	{
+		vfs_path = fmt::format("/dev_hdd0/game/%s/USRDIR/EBOOT.BIN", dir_name);
+	}
+	else
+	{
+		// Disc game: dirName is informational; the boot path is fixed.
+		vfs_path = "/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN";
+	}
+
+	const std::string host_path = vfs::get(vfs_path);
+
+	if (host_path.empty() || !fs::is_file(host_path))
+	{
+		cellGameExec.error("cellGameExecGame: EBOOT.BIN not found (vfs=%s, host=%s)", vfs_path, host_path);
+		return CELL_GAME_ERROR_NOTFOUND;
+	}
+
+	// Hand execData to the next process via game_exec_data so cellGameGetBootGameInfo can return it.
+	g_fxo->get<game_exec_data>().execdata = execData;
+
+	std::vector<std::string> argv = { std::move(vfs_path) };
+	std::vector<std::string> envp;
+	std::vector<u8> data;
+
+	lv2_exitspawn(ppu, argv, envp, data);
+
 	return CELL_OK;
 }
 
