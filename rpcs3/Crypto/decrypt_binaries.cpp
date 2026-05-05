@@ -38,7 +38,7 @@ usz decrypt_binaries_t::decrypt(std::string_view klic_input)
 		}
 
 		// Try to use the key that has been for the current running ELF
-		m_klics.insert(m_klics.end(), Emu.klic.begin(), Emu.klic.end());
+		m_klics.insert(m_klics.end(), Emu.current_process().RefKlic().begin(), Emu.current_process().RefKlic().end());
 	}
 
 	if (std::string_view text = klic_input.substr(klic_input.find_first_of('x') + 1); text.size() == 32)

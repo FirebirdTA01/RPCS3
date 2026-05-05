@@ -46,22 +46,22 @@ struct syscache_info
 	syscache_info() noexcept
 	{
 		// Check if dev_hdd1 is mounted by parent process
-		if (!Emu.hdd1.empty())
+		if (!Emu.current_process().RefHdd1().empty())
 		{
 			const auto lock = init.init();
 
 			// Extract cache id from path
-			std::string_view id = Emu.hdd1;
+			std::string_view id = Emu.current_process().RefHdd1();
 			id = id.substr(0, id.find_last_not_of(fs::delim) + 1);
 			id = id.substr(id.find_last_of(fs::delim) + 1);
 			cache_id = std::string{id};
 
-			if (!Emu.DeserialManager() && !fs::write_file<true>(get_syscache_state_corruption_indicator_file_path(Emu.hdd1), fs::write_new))
+			if (!Emu.DeserialManager() && !fs::write_file<true>(get_syscache_state_corruption_indicator_file_path(Emu.current_process().RefHdd1()), fs::write_new))
 			{
-				fmt::throw_exception("Failed to create HDD1 corruption indicator file! (path='%s', reason='%s')", Emu.hdd1, fs::g_tls_error);
+				fmt::throw_exception("Failed to create HDD1 corruption indicator file! (path='%s', reason='%s')", Emu.current_process().RefHdd1(), fs::g_tls_error);
 			}
 
-			cellSysutil.success("Retained cache from parent process: %s", Emu.hdd1);
+			cellSysutil.success("Retained cache from parent process: %s", Emu.current_process().RefHdd1());
 			return;
 		}
 

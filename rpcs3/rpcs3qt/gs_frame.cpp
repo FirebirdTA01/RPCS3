@@ -360,7 +360,7 @@ void gs_frame::handle_shortcut(gui::shortcuts::shortcut shortcut_key, const QKey
 	{
 		if (!g_cfg.savestate.suspend_emu)
 		{
-			Emu.after_kill_callback = []()
+			Emu.current_process().RefAfterKillCallback() = []()
 			{
 				Emu.Restart(true, false);
 			};
@@ -676,7 +676,7 @@ void gs_frame::close()
 			g_system_progress_canceled = true;
 
 			// Blocking shutdown request. Obsolete, but I'm keeping it here as last resort.
-			Emu.after_kill_callback = [this](){ deleteLater(); };
+			Emu.current_process().RefAfterKillCallback() = [this](){ deleteLater(); };
 			Emu.GracefulShutdown(true);
 		}
 		else

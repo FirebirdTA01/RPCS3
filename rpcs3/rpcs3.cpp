@@ -1323,7 +1323,7 @@ int run_rpcs3(int argc, char** argv)
 		// Postpone startup to main event loop
 		Emu.CallFromMainThread([path = std::move(spath), rpcs3_argv = std::move(rpcs3_argv), config_path = std::move(config_path)]() mutable
 		{
-			Emu.argv = std::move(rpcs3_argv);
+			Emu.current_process().RefArgv() = std::move(rpcs3_argv);
 			Emu.SetForceBoot(true);
 
 			const cfg_mode config_mode = config_path.empty() ? cfg_mode::custom : cfg_mode::config_override;

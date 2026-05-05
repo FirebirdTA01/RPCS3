@@ -369,17 +369,17 @@ void _sys_process_exit(ppu_thread& ppu, s32 status, u32 arg2, u32 arg3)
 			// for non-continuous boots, but be explicit here.
 			Emu.SetLaunchedFromVsh(false);
 
-			Emu.after_kill_callback = []()
+			Emu.current_process().RefAfterKillCallback() = []()
 			{
 				sys_process.success("[VSH] after_kill_callback firing — booting VSH");
 
-				Emu.argv.clear();
-				Emu.envp.clear();
-				Emu.data.clear();
-				Emu.disc.clear();
-				Emu.hdd1.clear();
-				Emu.klic.clear();
-				Emu.init_mem_containers = nullptr;
+				Emu.current_process().RefArgv().clear();
+				Emu.current_process().RefEnvp().clear();
+				Emu.current_process().RefData().clear();
+				Emu.current_process().RefDisc().clear();
+				Emu.current_process().RefHdd1().clear();
+				Emu.current_process().RefKlic().clear();
+				Emu.current_process().RefInitMemContainers() = nullptr;
 
 				Emu.SetForceBoot(true);
 
@@ -525,19 +525,19 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			ensure(g_fxo->init<lv2_memory_container>(std::min(old_size - total_size, sdk_suggested_mem) + total_size));
 		};
 
-		Emu.after_kill_callback = [is_from_vsh, func = std::move(func), argv = std::move(argv), envp = std::move(envp), data = std::move(data),
+		Emu.current_process().RefAfterKillCallback() = [is_from_vsh, func = std::move(func), argv = std::move(argv), envp = std::move(envp), data = std::move(data),
 			disc = std::move(disc), path = std::move(path), hdd1 = std::move(hdd1), old_config = Emu.GetUsedConfig(), old_db_config = Emu.GetUsedDatabaseConfig(), klic]() mutable
 		{
-			Emu.argv = std::move(argv);
-			Emu.envp = std::move(envp);
-			Emu.data = std::move(data);
-			Emu.disc = std::move(disc);
-			Emu.hdd1 = std::move(hdd1);
-			Emu.init_mem_containers = std::move(func);
+			Emu.current_process().RefArgv() = std::move(argv);
+			Emu.current_process().RefEnvp() = std::move(envp);
+			Emu.current_process().RefData() = std::move(data);
+			Emu.current_process().RefDisc() = std::move(disc);
+			Emu.current_process().RefHdd1() = std::move(hdd1);
+			Emu.current_process().RefInitMemContainers() = std::move(func);
 
 			if (klic)
 			{
-				Emu.klic.emplace_back(klic);
+				Emu.current_process().RefKlic().emplace_back(klic);
 			}
 
 			Emu.SetForceBoot(true);

@@ -1110,7 +1110,7 @@ extern bool is_memory_compatible_for_copy_from_executable_optimization(u32 addr,
 			return false;
 		}
 
-		s_ppu_exec.open(decrypt_self(fs::file(Emu.GetBoot()), Emu.klic.empty() ? nullptr : reinterpret_cast<u8*>(&Emu.klic[0])));
+		s_ppu_exec.open(decrypt_self(fs::file(Emu.GetBoot()), Emu.current_process().RefKlic().empty() ? nullptr : reinterpret_cast<u8*>(&Emu.current_process().RefKlic()[0])));
 
 		if (s_ppu_exec != elf_error::ok)
 		{
@@ -2621,11 +2621,11 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 		// Set ppc fixed allocations segment permission
 		g_ps3_process_info.ppc_seg = ppc_seg;
 
-		if (Emu.init_mem_containers)
+		if (Emu.current_process().RefInitMemContainers())
 		{
 			// Refer to sys_process_exit2 for explanation
 			// Make init_mem_containers empty before call
-			const auto callback = std::move(Emu.init_mem_containers);
+			const auto callback = std::move(Emu.current_process().RefInitMemContainers());
 			callback(mem_size);
 
 			ensure(g_fxo->is_init<id_manager::id_map<lv2_memory_container>>());
@@ -2736,37 +2736,37 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	auto ppu = idm::make_ptr<named_thread<ppu_thread>>(p, "main_thread", primary_prio, 1);
 
 	// Write initial data (exitspawn)
-	if (!Emu.data.empty())
+	if (!Emu.current_process().RefData().empty())
 	{
-		std::memcpy(vm::base(ppu->stack_addr + ppu->stack_size - ::size32(Emu.data)), Emu.data.data(), Emu.data.size());
-		ppu->gpr[1] -= utils::align<u32>(::size32(Emu.data), 0x10);
+		std::memcpy(vm::base(ppu->stack_addr + ppu->stack_size - ::size32(Emu.current_process().RefData())), Emu.current_process().RefData().data(), Emu.current_process().RefData().size());
+		ppu->gpr[1] -= utils::align<u32>(::size32(Emu.current_process().RefData()), 0x10);
 	}
 
 	// Initialize process arguments
 
 	// Calculate storage requirements on the stack
-	const u32 pointers_storage_size = u32{sizeof(u64)} * utils::align<u32>(::size32(Emu.envp) + ::size32(Emu.argv) + 2, 2);
+	const u32 pointers_storage_size = u32{sizeof(u64)} * utils::align<u32>(::size32(Emu.current_process().RefEnvp()) + ::size32(Emu.current_process().RefArgv()) + 2, 2);
 
 	u32 stack_alloc_size = pointers_storage_size;
 
-	for (const auto& arg : Emu.argv)
+	for (const auto& arg : Emu.current_process().RefArgv())
 	{
 		stack_alloc_size += utils::align<u32>(::size32(arg) + 1, 0x10);
 	}
 
-	for (const auto& arg : Emu.envp)
+	for (const auto& arg : Emu.current_process().RefEnvp())
 	{
 		stack_alloc_size += utils::align<u32>(::size32(arg) + 1, 0x10);
 	}
 
 	ensure(ppu->stack_size > stack_alloc_size);
 
-	vm::ptr<u64> args = vm::cast(static_cast<u32>(ppu->stack_addr + ppu->stack_size - stack_alloc_size - utils::align<u32>(::size32(Emu.data), 0x10)));
+	vm::ptr<u64> args = vm::cast(static_cast<u32>(ppu->stack_addr + ppu->stack_size - stack_alloc_size - utils::align<u32>(::size32(Emu.current_process().RefData()), 0x10)));
 	vm::ptr<u8> args_data = vm::cast(args.addr() + pointers_storage_size);
 
 	const vm::ptr<u64> argv = args;
 
-	for (const auto& arg : Emu.argv)
+	for (const auto& arg : Emu.current_process().RefArgv())
 	{
 		const u32 arg_size = ::size32(arg) + 1;
 
@@ -2781,7 +2781,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	const vm::ptr<u64> envp = args;
 	args = envp;
 
-	for (const auto& arg : Emu.envp)
+	for (const auto& arg : Emu.current_process().RefEnvp())
 	{
 		const u32 arg_size = ::size32(arg) + 1;
 
@@ -2828,7 +2828,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	// Set command line arguments, run entry function
 	ppu->cmd_list
 	({
-		{ ppu_cmd::set_args, 8 }, u64{Emu.argv.size()}, u64{argv.addr()}, u64{envp.addr()}, u64{Emu.envp.size()}, u64{ppu->id}, u64{tls_vaddr}, u64{tls_fsize}, u64{tls_vsize},
+		{ ppu_cmd::set_args, 8 }, u64{Emu.current_process().RefArgv().size()}, u64{argv.addr()}, u64{envp.addr()}, u64{Emu.current_process().RefEnvp().size()}, u64{ppu->id}, u64{tls_vaddr}, u64{tls_fsize}, u64{tls_vsize},
 		{ ppu_cmd::set_gpr, 11 }, u64{elf.header.e_entry},
 		{ ppu_cmd::set_gpr, 12 }, u64{malloc_pagesize},
 		{ ppu_cmd::entry_call, 0 },

@@ -4058,9 +4058,9 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 				}
 			}
 
-			if (!src && !Emu.klic.empty() && src.open(path))
+			if (!src && !Emu.current_process().RefKlic().empty() && src.open(path))
 			{
-				src = decrypt_self(src, reinterpret_cast<u8*>(&Emu.klic[0]));
+				src = decrypt_self(src, reinterpret_cast<u8*>(&Emu.current_process().RefKlic()[0]));
 
 				if (src)
 				{
@@ -4269,9 +4269,9 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 				}
 			}
 
-			if (!src && !Emu.klic.empty() && src.open(path))
+			if (!src && !Emu.current_process().RefKlic().empty() && src.open(path))
 			{
-				src = decrypt_self(src, reinterpret_cast<u8*>(&Emu.klic[0]));
+				src = decrypt_self(src, reinterpret_cast<u8*>(&Emu.current_process().RefKlic()[0]));
 
 				if (src)
 				{

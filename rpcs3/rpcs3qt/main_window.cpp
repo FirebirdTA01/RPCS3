@@ -2593,7 +2593,7 @@ void main_window::CreateConnects()
 
 		if (!g_cfg.savestate.suspend_emu)
 		{
-			Emu.after_kill_callback = []()
+			Emu.current_process().RefAfterKillCallback() = []()
 			{
 				Emu.Restart(true, false);
 			};

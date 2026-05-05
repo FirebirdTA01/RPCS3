@@ -67,7 +67,7 @@ error_code sys_sm_shutdown(ppu_thread& ppu, u16 op, vm::ptr<void> param, u64 siz
 	case 0x1200:
 	{
 		sys_sm.success("Received reboot request from application");
-		lv2_exitspawn(ppu, Emu.argv, Emu.envp, Emu.data);
+		lv2_exitspawn(ppu, Emu.current_process().RefArgv(), Emu.current_process().RefEnvp(), Emu.current_process().RefData());
 		break;
 	}
 	case 0x8201:
