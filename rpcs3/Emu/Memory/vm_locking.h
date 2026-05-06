@@ -28,9 +28,9 @@ namespace vm
 		range_bits = 3,
 	};
 
-	extern atomic_t<u64, 128> g_range_lock_bits[2];
+	extern atomic_t<u64, 128>* g_range_lock_bits;
 
-	extern atomic_t<u64> g_shmem[];
+	extern atomic_t<u64>* g_shmem;
 
 	// Register reader
 	void passive_lock(cpu_thread& cpu);

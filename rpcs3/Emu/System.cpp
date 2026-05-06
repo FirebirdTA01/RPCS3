@@ -4973,6 +4973,11 @@ void Emulator::set_active_process(u32 pid)
 		vm::g_sudo_addr = m_processes[idx].vm_handle().sudo_addr;
 		vm::g_exec_addr = m_processes[idx].vm_handle().exec_addr;
 		vm::g_pages     = m_processes[idx].vm_handle().page_flags.data();
+		vm::g_reservations    = m_processes[idx].vm_handle().reservations;
+		vm::g_shmem           = m_processes[idx].vm_handle().shmem;
+		vm::g_range_lock_set  = m_processes[idx].vm_handle().range_lock_set;
+		vm::g_range_lock_bits = m_processes[idx].vm_handle().range_lock_bits;
+		vm::g_locations       = &m_processes[idx].vm_handle().locations;
 		rsx->m_rsx_state = &m_processes[idx].rsx_ctx();
 
 		// 4. Load incoming process's RSX state from its lv2_process slot
@@ -4995,6 +5000,11 @@ void Emulator::set_active_process(u32 pid)
 		vm::g_sudo_addr = m_processes[idx].vm_handle().sudo_addr;
 		vm::g_exec_addr = m_processes[idx].vm_handle().exec_addr;
 		vm::g_pages     = m_processes[idx].vm_handle().page_flags.data();
+		vm::g_reservations    = m_processes[idx].vm_handle().reservations;
+		vm::g_shmem           = m_processes[idx].vm_handle().shmem;
+		vm::g_range_lock_set  = m_processes[idx].vm_handle().range_lock_set;
+		vm::g_range_lock_bits = m_processes[idx].vm_handle().range_lock_bits;
+		vm::g_locations       = &m_processes[idx].vm_handle().locations;
 	}
 
 	m_active_process_index = idx;

@@ -104,35 +104,28 @@ namespace vm
 	// For SPU
 	u8* const g_free_addr = g_stat_addr + 0x1'0000'0000;
 
-	// Reservation stats
-	alignas(4096) u8 g_reservations[65536 / 128 * 64]{0};
-
-	// Pointers to shared memory mirror or zeros for "normal" memory
-	alignas(4096) atomic_t<u64> g_shmem[65536]{0};
-
-	// Memory locations
-	alignas(64) std::vector<std::shared_ptr<block_t>> g_locations;
-
 	// Memory mutex acknowledgement
 	thread_local atomic_t<cpu_thread*>* g_tls_locked = nullptr;
 
 	// Memory mutex: passive locks
 	std::array<atomic_t<cpu_thread*>, g_cfg.core.ppu_threads.max> g_locks{};
 
-	// Range lock slot allocation bits
-	atomic_t<u64, 128> g_range_lock_bits[2]{};
+	// Global page table pointer — points to current process's page_flags.
+	// Future: replace with atomic pointer if concurrent allocation across processes is needed.
+	atomic_t<u8>* g_pages = Emu.current_process().vm_handle().page_flags.data();
+
+	// Per-process VM state — these point into the active process's vm_handle and are
+	// swapped together by set_active_process. Same shape as g_base_addr / g_pages.
+	u8*                       g_reservations    = Emu.current_process().vm_handle().reservations;
+	atomic_t<u64>*            g_shmem           = Emu.current_process().vm_handle().shmem;
+	atomic_t<u64, 128>*       g_range_lock_set  = Emu.current_process().vm_handle().range_lock_set;
+	atomic_t<u64, 128>*       g_range_lock_bits = Emu.current_process().vm_handle().range_lock_bits;
+	std::vector<std::shared_ptr<block_t>>* g_locations = &Emu.current_process().vm_handle().locations;
 
 	auto& get_range_lock_bits(bool is_exclusive_range)
 	{
 		return g_range_lock_bits[+is_exclusive_range];
 	}
-
-	// Memory range lock slots (sparse atomics)
-	atomic_t<u64, 128> g_range_lock_set[64]{};
-
-	// Global page table pointer — points to current process's page_flags.
-	// Future: replace with atomic pointer if concurrent allocation across processes is needed.
-	atomic_t<u8>* g_pages = Emu.current_process().vm_handle().page_flags.data();
 
 	std::pair<bool, u64> try_reservation_update(u32 addr)
 	{
@@ -324,7 +317,7 @@ namespace vm
 
 	void free_range_lock(atomic_t<u64, 128>* range_lock) noexcept
 	{
-		if (range_lock < g_range_lock_set || range_lock >= std::end(g_range_lock_set))
+		if (range_lock < g_range_lock_set || range_lock >= g_range_lock_set + g_range_lock_set_count)
 		{
 			fmt::throw_exception("Invalid range lock");
 		}
@@ -379,7 +372,7 @@ namespace vm
 		}
 
 		// Block or signal new range locks
-		auto range_lock = &*std::prev(std::end(vm::g_range_lock_set));
+		auto range_lock = &g_range_lock_set[g_range_lock_set_count - 1];
 		*range_lock = addr | u64{size} << 32 | flags;
 
 		utils::prefetch_read(g_range_lock_set + 0);
@@ -822,7 +815,7 @@ namespace vm
 				ensure((shm_self & 0xffff'0000'0000'ffff) == range_locked);
 
 				// Find another mirror and map it as shareable too
-				for (auto& ploc : g_locations)
+				for (auto& ploc : *g_locations)
 				{
 					if (auto loc = ploc.get())
 					{
@@ -1126,9 +1119,14 @@ namespace vm
 		// Always check this flag
 		flags |= page_allocated;
 
+		// Prefer the calling thread's cached page table so a suspended-process
+		// thread reads its own VM rather than the active process's.
+		auto* cpu = get_current_cpu_thread();
+		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : get_active_vm_handle().page_flags.data();
+
 		for (u32 i = addr / 4096, max = (addr + size - 1) / 4096; i <= max;)
 		{
-			auto state = +get_active_vm_handle().page_flags[i];
+			auto state = +pages[i];
 
 			if (~state & flags) [[unlikely]]
 			{
@@ -1923,7 +1921,7 @@ namespace vm
 			return false;
 		}
 
-		for (auto& block : g_locations)
+		for (auto& block : *g_locations)
 		{
 			if (!block)
 			{
@@ -1986,7 +1984,7 @@ namespace vm
 
 		auto block = std::make_shared<block_t>(addr, size, flags);
 
-		g_locations.emplace_back(block);
+		g_locations->emplace_back(block);
 
 		return block;
 	}
@@ -1996,16 +1994,16 @@ namespace vm
 		if (location != any)
 		{
 			// return selected location
-			if (location < g_locations.size())
+			if (location < g_locations->size())
 			{
-				return g_locations[location];
+				return (*g_locations)[location];
 			}
 
 			return nullptr;
 		}
 
 		// search location by address
-		for (auto& block : g_locations)
+		for (auto& block : *g_locations)
 		{
 			if (block && addr >= block->addr && addr <= block->addr + block->size - 1)
 			{
@@ -2044,7 +2042,7 @@ namespace vm
 
 		auto block = _find_map(size, align, flags);
 
-		if (block) g_locations.emplace_back(block);
+		if (block) g_locations->emplace_back(block);
 
 		return block;
 	}
@@ -2076,7 +2074,7 @@ namespace vm
 
 		vm::writer_lock lock;
 
-		for (auto it = g_locations.begin() + memory_location_max; it != g_locations.end(); it++)
+		for (auto it = g_locations->begin() + memory_location_max; it != g_locations->end(); it++)
 		{
 			if (*it && (*it)->addr == addr)
 			{
@@ -2102,7 +2100,7 @@ namespace vm
 				}
 
 				result.first = std::move(*it);
-				g_locations.erase(it);
+				g_locations->erase(it);
 				ensure(_unmap_block(result.first, &unmap_notifications.unmap_data));
 				result.second = true;
 				return result;
@@ -2131,10 +2129,10 @@ namespace vm
 		}
 
 		// Allocation on arbitrary address
-		if (location != any && location < g_locations.size())
+		if (location != any && location < g_locations->size())
 		{
 			// return selected location
-			auto& loc = g_locations[location];
+			auto& loc = (*g_locations)[location];
 
 			if (!loc)
 			{
@@ -2194,7 +2192,7 @@ namespace vm
 	{
 		auto* range_lock = alloc_range_lock(); // Released at the end of function
 
-		auto mem_lock = &*std::prev(std::end(vm::g_range_lock_set));
+		auto mem_lock = &g_range_lock_set[g_range_lock_set_count - 1];
 
 		while (true)
 		{
@@ -2281,11 +2279,11 @@ namespace vm
 			g_exec_addr, g_exec_addr + 0x200000000 - 1,
 			g_hook_addr, g_hook_addr + 0x800000000 - 1,
 			g_stat_addr, g_stat_addr + 0xffff'ffff,
-			g_reservations, g_reservations + sizeof(g_reservations) - 1);
+			g_reservations, g_reservations + g_reservations_size - 1);
 
 			std::memset(&get_active_vm_handle().page_flags, 0, sizeof(get_active_vm_handle().page_flags));
 
-			g_locations =
+			*g_locations =
 			{
 				std::make_shared<block_t>(0x00010000, 0x0FFF0000, page_size_64k | preallocated), // main
 				nullptr,		                                                                 // user 64k pages
@@ -2296,10 +2294,10 @@ namespace vm
 				std::make_shared<block_t>(0xE0000000, 0x20000000, page_size_64k),                // SPU reserved
 			};
 
-			std::memset(g_reservations, 0, sizeof(g_reservations));
-			std::memset(g_shmem, 0, sizeof(g_shmem));
-			std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
-			std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
+			std::memset(g_reservations, 0, g_reservations_size);
+			std::memset(g_shmem, 0, sizeof(*g_shmem) * g_shmem_count);
+			std::memset(g_range_lock_set, 0, sizeof(*g_range_lock_set) * g_range_lock_set_count);
+			std::memset(g_range_lock_bits, 0, sizeof(*g_range_lock_bits) * 2);
 
 #ifdef _WIN32
 			utils::memory_release(g_hook_addr, 0x800000000);
@@ -2313,7 +2311,7 @@ namespace vm
 		{
 			vm::writer_lock lock;
 
-			for (auto& block : g_locations)
+			for (auto& block : *g_locations)
 			{
 				if (block)
 				{
@@ -2322,7 +2320,7 @@ namespace vm
 				}
 			}
 
-			g_locations.clear();
+			g_locations->clear();
 		}
 
 		utils::memory_decommit(g_exec_addr, 0x200000000);
@@ -2335,8 +2333,8 @@ namespace vm
 		utils::memory_decommit(g_hook_addr, 0x800000000);
 #endif
 
-		std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
-		std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
+		std::memset(g_range_lock_set, 0, sizeof(*g_range_lock_set) * g_range_lock_set_count);
+		std::memset(g_range_lock_bits, 0, sizeof(*g_range_lock_bits) * 2);
 	}
 
 	void save(utils::serial& ar)
@@ -2345,7 +2343,7 @@ namespace vm
 		// Just need one address for this optimization
 		std::vector<std::pair<utils::shm*, u32>> shared;
 
-		for (auto& loc : g_locations)
+		for (auto& loc : *g_locations)
 		{
 			if (loc) loc->get_shared_memory(shared);
 		}
@@ -2389,9 +2387,9 @@ namespace vm
 		}
 
 		// TODO: Serialize std::vector direcly
-		ar(g_locations.size());
+		ar(g_locations->size());
 
-		for (auto& loc : g_locations)
+		for (auto& loc : *g_locations)
 		{
 			const u8 has = loc.operator bool();
 			ar(has);
@@ -2431,15 +2429,15 @@ namespace vm
 			serialize_memory_bytes(ar, shm->map_self(), shm->size());
 		}
 
-		for (auto& block : g_locations)
+		for (auto& block : *g_locations)
 		{
 			if (block) _unmap_block(block);
 		}
 
-		g_locations.clear();
-		g_locations.resize(ar.pop<usz>());
+		g_locations->clear();
+		g_locations->resize(ar.pop<usz>());
 
-		for (auto& loc : g_locations)
+		for (auto& loc : *g_locations)
 		{
 			const u8 has = ar.pop<u8>();
 
@@ -2452,7 +2450,7 @@ namespace vm
 
 	u32 get_shm_addr(const std::shared_ptr<utils::shm>& shared)
 	{
-		for (auto& loc : g_locations)
+		for (auto& loc : *g_locations)
 		{
 			if (u32 addr = loc ? loc->get_shm_addr(shared) : 0)
 			{

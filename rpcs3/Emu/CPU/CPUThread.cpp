@@ -791,6 +791,7 @@ cpu_thread::cpu_thread(u32 id)
 	: id(id)
 {
 	memory_base_addr = vm::g_base_addr;
+	page_flags = vm::g_pages;
 	while (Emu.GetStatus() == system_state::paused)
 	{
 		// Solve race between Emulator::Pause and this construction of thread which most likely is guarded by IDM mutex

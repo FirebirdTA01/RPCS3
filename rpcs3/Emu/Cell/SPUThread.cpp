@@ -500,7 +500,7 @@ const extern spu_decoder<spu_iflag> g_spu_iflag;
 
 namespace vm
 {
-	extern atomic_t<u64, 128> g_range_lock_set[64];
+	extern atomic_t<u64, 128>* g_range_lock_set;
 
 	// Defined here for performance reasons
 	writer_lock::~writer_lock() noexcept
@@ -4959,7 +4959,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 	// Set range_lock first optimistically
 	range_lock->store(u64{128} << 32 | addr | vm::range_readable);
 
-	u64 lock_val = *std::prev(std::end(vm::g_range_lock_set));
+	u64 lock_val = vm::g_range_lock_set[vm::g_range_lock_set_count - 1];
 	u64 old_lock = 0;
 
 	while (lock_val != old_lock)
@@ -5014,7 +5014,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 			break;
 		}
 
-		old_lock = std::exchange(lock_val, *std::prev(std::end(vm::g_range_lock_set)));
+		old_lock = std::exchange(lock_val, vm::g_range_lock_set[vm::g_range_lock_set_count - 1]);
 	}
 
 	if (!range_lock->load()) [[unlikely]]
@@ -5040,7 +5040,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 	// Set range_lock first optimistically
 	range_lock->store(u64{128} << 32 | addr | vm::range_readable);
 
-	u64 lock_val = *std::prev(std::end(vm::g_range_lock_set));
+	u64 lock_val = vm::g_range_lock_set[vm::g_range_lock_set_count - 1];
 	u64 old_lock = 0;
 
 	while (lock_val != old_lock)
@@ -5095,7 +5095,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 			break;
 		}
 
-		old_lock = std::exchange(lock_val, *std::prev(std::end(vm::g_range_lock_set)));
+		old_lock = std::exchange(lock_val, vm::g_range_lock_set[vm::g_range_lock_set_count - 1]);
 	}
 
 	if (!range_lock->load()) [[unlikely]]

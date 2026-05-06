@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <map>
 #include "util/types.hpp"
 #include "util/atomic.hpp"
@@ -30,12 +31,26 @@ namespace utils
 
 namespace vm
 {
+	class block_t;
+
+	// Sizes for the per-process arrays now stored in vm_handle.
+	inline constexpr usz g_reservations_size  = 65536 / 128 * 64;
+	inline constexpr usz g_shmem_count        = 65536;
+	inline constexpr usz g_range_lock_set_count = 64;
+
 	struct vm_handle
 	{
 		u8* base_addr = nullptr;
 		u8* sudo_addr = nullptr;
 		u8* exec_addr = nullptr;
 		std::array<atomic_t<u8>, 0x100'0000> page_flags{};
+
+		// Per-process VM allocator and reservation state, previously held in vm.cpp globals.
+		alignas(4096) u8 reservations[g_reservations_size]{};
+		alignas(4096) atomic_t<u64> shmem[g_shmem_count]{};
+		alignas(64) atomic_t<u64, 128> range_lock_set[g_range_lock_set_count]{};
+		atomic_t<u64, 128> range_lock_bits[2]{};
+		std::vector<std::shared_ptr<block_t>> locations;
 
 		bool allocate(); // Allocate host VA for this process's 256MB main RAM
 	};
@@ -53,7 +68,11 @@ namespace vm
 	extern atomic_t<u8>* g_pages;
 	extern u8* const g_stat_addr;
 	extern u8* const g_free_addr;
-	extern u8 g_reservations[65536 / 128 * 64];
+	extern u8* g_reservations;
+	extern atomic_t<u64>* g_shmem;
+	extern std::vector<std::shared_ptr<block_t>>* g_locations;
+	extern atomic_t<u64, 128>* g_range_lock_set;
+	extern atomic_t<u64, 128>* g_range_lock_bits;
 
 	static constexpr u64 g_exec_addr_seg_offset = 0x2'0000'0000ULL;
 
@@ -109,14 +128,18 @@ namespace vm
 			return check_addr(addr, flags, Size);
 		}
 
-		return !(~g_pages[addr / 4096] & (flags | page_allocated));
+		auto* cpu = get_current_cpu_thread();
+		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : g_pages;
+		return !(~pages[addr / 4096] & (flags | page_allocated));
 	}
 
 	// Like check_addr but should only be used in lock-free context with care
 	inline std::pair<bool, u8> get_addr_flags(u32 addr) noexcept
 	{
 
-		const u8 flags = g_pages[addr / 4096].load();
+		auto* cpu = get_current_cpu_thread();
+		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : g_pages;
+		const u8 flags = pages[addr / 4096].load();
 
 		return std::make_pair(!!(flags & page_allocated), flags);
 	}
