@@ -65,6 +65,7 @@ void fmt_class_string<cpu_flag>::format(std::string& out, u64 arg)
 		case cpu_flag::dbg_global_pause: return "G-PAUSE";
 		case cpu_flag::dbg_pause: return "PAUSE";
 		case cpu_flag::dbg_step: return "STEP";
+		case cpu_flag::process_suspended: return "P-SUSPEND";
 		case cpu_flag::__bitset_enum_max: break;
 		}
 
@@ -928,7 +929,7 @@ bool cpu_thread::check_state() noexcept
 			if (!is_stopped(flags) && flags.none_of(cpu_flag::ret))
 			{
 				// Check pause flags which hold thread inside check_state (ignore suspend/debug flags on cpu_flag::temp)
-				if (flags & cpu_flag::pause || (!cpu_memory_checked && flags & cpu_flag::memory) || (cpu_can_stop && flags & (cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::suspend + cpu_flag::yield + cpu_flag::preempt)))
+				if (flags & cpu_flag::pause || (!cpu_memory_checked && flags & cpu_flag::memory) || (cpu_can_stop && flags & (cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::suspend + cpu_flag::process_suspended + cpu_flag::yield + cpu_flag::preempt)))
 				{
 					if (!(flags & cpu_flag::wait))
 					{
@@ -1061,7 +1062,7 @@ bool cpu_thread::check_state() noexcept
 			continue;
 		}
 
-		if (state0 & ((cpu_can_stop ? cpu_flag::suspend : cpu_flag::dbg_pause) + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause))
+		if (state0 & ((cpu_can_stop ? cpu_flag::suspend : cpu_flag::dbg_pause) + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::process_suspended))
 		{
 			if (state0 & cpu_flag::dbg_pause)
 			{
@@ -1722,7 +1723,7 @@ extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool reve
 				if (is_emu_paused)
 				{
 					// If emulation is paused, we can only hope it's already in a state compatible with savestates
-					if (!(spu->state & (cpu_flag::dbg_global_pause + cpu_flag::dbg_pause)))
+					if (!(spu->state & (cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::process_suspended)))
 					{
 						failed = true;
 						break;

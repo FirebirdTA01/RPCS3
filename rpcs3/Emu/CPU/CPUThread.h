@@ -33,6 +33,7 @@ enum class cpu_flag : u32
 	dbg_global_pause, // Emulation paused
 	dbg_pause, // Thread paused
 	dbg_step, // Thread forced to pause after one step (one instruction, etc)
+	process_suspended, // Per-process suspend (thread owner's process is inactive)
 
 	__bitset_enum_max
 };
@@ -46,7 +47,7 @@ constexpr bool is_stopped(bs_t<cpu_flag> state)
 // Test paused state
 constexpr bool is_paused(bs_t<cpu_flag> state)
 {
-	return !!(state & (cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause)) && !is_stopped(state);
+	return !!(state & (cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::process_suspended)) && !is_stopped(state);
 }
 
 class cpu_thread
@@ -54,6 +55,7 @@ class cpu_thread
 public:
 	u64 block_hash = 0;
 	u8* memory_base_addr = nullptr; // Set by derived class constructors from vm::g_base_addr
+	u32 owner_pid = 1; // Process ID that owns this thread (default: primary process)
 
 protected:
 	cpu_thread(u32 id);

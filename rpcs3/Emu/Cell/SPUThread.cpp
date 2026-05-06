@@ -1768,6 +1768,7 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 	, spu_tname(make_single<std::string>(name))
 {
 	init_spu_decoder();
+	owner_pid = Emu.current_process().pid();
 
 	if (g_cfg.core.mfc_debug)
 	{
@@ -1830,6 +1831,7 @@ spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
 	, spu_tname(make_single<std::string>(ar.operator std::string()))
 {
 	init_spu_decoder();
+	owner_pid = Emu.current_process().pid();
 
 	if (g_cfg.core.mfc_debug)
 	{

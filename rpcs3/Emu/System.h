@@ -219,6 +219,8 @@ public:
 	// Multi-process API (debug-only — not yet exposed via PS3 syscalls)
 	u32 create_process();
 	void set_active_process(u32 pid);
+	void suspend_process(u32 pid);
+	void resume_process(u32 pid);
 
 	void Init();
 

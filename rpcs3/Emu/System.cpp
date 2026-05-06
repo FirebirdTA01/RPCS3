@@ -4893,4 +4893,56 @@ void Emulator::set_active_process(u32 pid)
 	// TODO: suspend/resume threads when set_active_process becomes a real context switch
 }
 
+void Emulator::suspend_process(u32 pid)
+{
+	const u32 idx = pid - 1;
+	ensure(idx < m_processes.size());
+
+	sys_log.notice("suspend_process: pid=%u", pid);
+
+	// Set process_suspended flag on all PPU threads belonging to this process
+	idm::select<ppu_thread>([&](u32, ppu_thread& ppu)
+	{
+		if (ppu.owner_pid == pid)
+		{
+			ppu.state += cpu_flag::process_suspended;
+		}
+	});
+
+	// Same for SPU threads
+	idm::select<spu_thread>([&](u32, spu_thread& spu)
+	{
+		if (spu.owner_pid == pid)
+		{
+			spu.state += cpu_flag::process_suspended;
+		}
+	});
+}
+
+void Emulator::resume_process(u32 pid)
+{
+	const u32 idx = pid - 1;
+	ensure(idx < m_processes.size());
+
+	sys_log.notice("resume_process: pid=%u", pid);
+
+	// Clear process_suspended flag on all PPU threads belonging to this process
+	idm::select<ppu_thread>([&](u32, ppu_thread& ppu)
+	{
+		if (ppu.owner_pid == pid)
+		{
+			ppu.state -= cpu_flag::process_suspended;
+		}
+	});
+
+	// Same for SPU threads
+	idm::select<spu_thread>([&](u32, spu_thread& spu)
+	{
+		if (spu.owner_pid == pid)
+		{
+			spu.state -= cpu_flag::process_suspended;
+		}
+	});
+}
+
 Emulator Emu;
