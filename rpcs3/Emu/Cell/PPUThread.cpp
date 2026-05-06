@@ -233,8 +233,7 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	c.shl(x86::edx, 13);
 	c.mov(x86::r12d, x86::edx); // Set relocation base
 
-	c.movabs(x86::rbx, reinterpret_cast<u64>(&vm::g_base_addr));
-	c.mov(x86::rbx, x86::qword_ptr(x86::rbx));
+	c.mov(x86::rbx, x86::qword_ptr(x86::rbp, ::offset32(&ppu_thread::memory_base_addr)));
 	c.mov(x86::r14, x86::qword_ptr(x86::rbp, ::offset32(&ppu_thread::gpr, 0))); // Load some registers
 	c.mov(x86::rsi, x86::qword_ptr(x86::rbp, ::offset32(&ppu_thread::gpr, 1)));
 	c.mov(x86::rdi, x86::qword_ptr(x86::rbp, ::offset32(&ppu_thread::gpr, 2)));
@@ -354,8 +353,8 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	c.lsl(reg_hp.w(), reg_hp.w(), 13);
 
 	// Load registers
-	c.mov(a64::x22, Imm(reinterpret_cast<u64>(&vm::g_base_addr)));
-	c.ldr(a64::x22, arm::Mem(a64::x22));
+	static_assert(::offset32(&ppu_thread::memory_base_addr) < 32760, "PPU memory_base_addr offset too large for ARM64 LDR immediate");
+	c.ldr(a64::x22, arm::Mem(ppu_t_base, ::offset32(&ppu_thread::memory_base_addr)));
 
 	const arm::GpX gpr_addr_reg = a64::x9;
 	c.mov(gpr_addr_reg, Imm(static_cast<u64>(::offset32(&ppu_thread::gpr))));
@@ -1045,7 +1044,7 @@ struct ppu_far_jumps_t
 
 #ifdef ARCH_X64
 				c.mov(args[0], x86::rbp);
-				c.mov(args[2], vm::g_base_addr + pc);
+				c.mov(args[2], vm::g_base_addr + pc); // TODO: per-process base requires runtime resolution
 				c.jmp(ppu_far_jump);
 #else
 				Label jmp_address = c.newLabel();
@@ -1059,7 +1058,7 @@ struct ppu_far_jumps_t
 				c.bind(jmp_address);
 				c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
 				c.bind(this_op_address);
-				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc);
+				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc); // TODO: per-process base requires runtime resolution
 #endif
 			}, &rt);
 		}
@@ -2402,7 +2401,7 @@ void ppu_thread::exec_task()
 	}
 
 	const auto cache = vm::g_exec_addr;
-	const auto mem_ = vm::g_base_addr;
+	const auto mem_ = vm::g_base_addr; // TODO: per-process base requires runtime resolution
 
 	while (true)
 	{

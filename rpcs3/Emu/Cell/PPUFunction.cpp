@@ -1901,8 +1901,8 @@ auto gen_ghc_cpp_trampoline(ppu_intrp_func_t fn_target)
 		// Take second ghc arg
 		c.mov(args[0], x86::rbp);
 		c.mov(args[2].r32(), x86::dword_ptr(args[0], ::offset32(&ppu_thread::cia)));
-		c.movabs(args[1], reinterpret_cast<u64>(&vm::g_base_addr));
-		c.add(args[2], x86::qword_ptr(args[1]));
+		c.mov(args[1], x86::qword_ptr(args[0], ::offset32(&ppu_thread::memory_base_addr)));
+		c.add(args[2], args[1]);
 		c.jmp(Imm(fn_target));
 	};
 }
@@ -1922,9 +1922,8 @@ auto gen_ghc_cpp_trampoline(ppu_intrp_func_t fn_target)
 		c.ldr(a64::x11, arm::Mem(cia_offset));
 		c.ldr(a64::x26, arm::Mem(args[0], a64::x11));
 
-		Label base_addr = c.newLabel();
-		c.ldr(a64::x22, arm::Mem(base_addr));
-		c.ldr(a64::x22, arm::Mem(a64::x22));
+		static_assert(::offset32(&ppu_thread::memory_base_addr) < 32760, "PPU memory_base_addr offset too large for ARM64 LDR immediate");
+		c.ldr(a64::x22, arm::Mem(args[0], ::offset32(&ppu_thread::memory_base_addr)));
 
 		c.add(args[2], a64::x22, a64::x26);
 
@@ -1932,8 +1931,6 @@ auto gen_ghc_cpp_trampoline(ppu_intrp_func_t fn_target)
 		c.ldr(a64::x22, arm::Mem(jmp_target));
 		c.br(a64::x22);
 
-		c.bind(base_addr);
-		c.embedUInt64(reinterpret_cast<u64>(&vm::g_base_addr));
 		c.bind(cia_offset);
 		c.embedUInt64(static_cast<u64>(::offset32(&ppu_thread::cia)));
 		c.bind(jmp_target);
