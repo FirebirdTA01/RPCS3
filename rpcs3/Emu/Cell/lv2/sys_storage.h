@@ -23,6 +23,7 @@ enum Devices : u64
 
 struct lv2_storage
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x45000000;
 	static const u32 id_step = 1;
 	static const u32 id_count = 2048;

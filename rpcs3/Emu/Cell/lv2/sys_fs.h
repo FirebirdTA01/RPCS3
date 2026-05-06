@@ -280,6 +280,7 @@ public:
 
 struct lv2_file final : lv2_fs_object
 {
+	using is_process_local = std::true_type;
 	static constexpr u32 id_type = 1;
 
 	fs::file file;
@@ -369,6 +370,7 @@ struct lv2_file final : lv2_fs_object
 
 struct lv2_dir final : lv2_fs_object
 {
+	using is_process_local = std::true_type;
 	static constexpr u32 id_type = 2;
 
 	const std::vector<fs::dir_entry> entries;

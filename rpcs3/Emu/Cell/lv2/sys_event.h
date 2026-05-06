@@ -82,6 +82,7 @@ struct lv2_event_port;
 
 struct lv2_event_queue final : public lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x8d000000;
 
 	const u32 id;
@@ -117,6 +118,7 @@ struct lv2_event_queue final : public lv2_obj
 
 struct lv2_event_port final : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x0e000000;
 
 	const s32 type; // Port type, either IPC or local

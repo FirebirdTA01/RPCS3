@@ -63,6 +63,7 @@ struct sys_page_attr_t
 
 struct lv2_memory_container
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x3F000000;
 	static const u32 id_step = 0x1;
 	static const u32 id_count = 16;

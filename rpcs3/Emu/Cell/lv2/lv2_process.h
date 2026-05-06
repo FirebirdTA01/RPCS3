@@ -9,6 +9,7 @@
 #include "util/atomic.hpp"
 #include "Emu/config_mode.h"
 #include "Utilities/bit_set.h"
+#include "util/fixed_typemap.hpp"
 
 enum class system_state : u32
 {
@@ -44,6 +45,11 @@ public:
 	system_state GetState() const { return m_state; }
 	atomic_t<system_state>& RefState() { return m_state; }
 	const atomic_t<system_state>& RefState() const { return m_state; }
+
+	u32 pid() const { return m_pid; }
+
+	stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() { return m_local_fxo; }
+	const stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() const { return m_local_fxo; }
 
 	// --- display strings ---
 	const std::string& GetAppVersion() const { return m_app_version; }
@@ -220,4 +226,6 @@ private:
 	atomic_t<u64> m_pause_start_time{0};
 	atomic_t<u64> m_pause_amend_time{0};
 	atomic_t<system_state> m_state{system_state::stopped};
+	u32 m_pid = 1;
+	stx::manual_typemap<lv2_process, 0x10'0000, 32> m_local_fxo;
 };

@@ -4,6 +4,7 @@
 
 struct lv2_io_buf
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x44000000;
 	static const u32 id_step = 1;
 	static const u32 id_count = 2048;

@@ -18,6 +18,7 @@ namespace utils
 
 struct lv2_memory : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x08000000;
 
 	const u32 size; // Memory size

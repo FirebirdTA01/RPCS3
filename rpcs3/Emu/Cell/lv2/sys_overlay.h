@@ -6,6 +6,7 @@
 
 struct lv2_overlay final : ppu_module<lv2_obj>
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x25000000;
 
 	u32 entry{};

@@ -10,6 +10,13 @@
 #include "util/serialization.hpp"
 #include "util/shared_ptr.hpp"
 #include "util/fixed_typemap.hpp"
+#include "Emu/System.h"
+
+namespace id_manager
+{
+	template <typename T>
+	struct is_process_local : std::false_type {};
+}
 
 extern stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
 
@@ -407,6 +414,15 @@ namespace id_manager
 class idm
 {
 	template <typename T>
+	static auto& access_typemap()
+	{
+		if constexpr (id_manager::is_process_local<T>::value)
+			return Emu.current_process().local_fxo();
+		else
+			return *g_fxo;
+	}
+
+	template <typename T>
 	static constexpr u32 get_index(u32 id)
 	{
 		using traits = id_manager::id_traits<T>;
@@ -497,7 +513,7 @@ class idm
 	{
 		static_assert(IdmTypesCompatible<T, Type>, "Invalid ID type combination");
 
-		auto& map = g_fxo->get<id_manager::id_map<T>>();
+		auto& map = access_typemap<Type>().template get<id_manager::id_map<T>>();
 
 		if (index >= map.highest_index)
 		{
@@ -547,7 +563,7 @@ class idm
 		// Allocate new id
 		std::lock_guard lock(id_manager::g_mutex);
 
-		auto& map = g_fxo->get<id_manager::id_map<T>>();
+		auto& map = access_typemap<Type>().template get<id_manager::id_map<T>>();
 
 		if (auto* key_ptr = allocate_id({map.vec_keys.data(), map.vec_keys.size()}, map.highest_index, get_type<Type>(), id, traits::base, traits::step, traits::count, traits::uses_lowest_id, traits::invl_range))
 		{
@@ -574,12 +590,12 @@ public:
 	{
 		std::lock_guard lock(id_manager::g_mutex);
 
-		for (auto& ptr : g_fxo->get<id_manager::id_map<T>>().vec_data)
+		for (auto& ptr : access_typemap<T>().template get<id_manager::id_map<T>>().vec_data)
 		{
 			ptr.reset();
 		}
 
-		for (auto& key : g_fxo->get<id_manager::id_map<T>>().vec_keys)
+		for (auto& key : access_typemap<T>().template get<id_manager::id_map<T>>().vec_keys)
 		{
 			key.clear();
 		}
@@ -751,7 +767,7 @@ public:
 
 		std::conditional_t<std::is_void_v<result_type>, u32, return_pair<stx::shared_ptr<object_type>, result_type>> result{};
 
-		auto& map = g_fxo->get<id_manager::id_map<T>>();
+		auto& map = access_typemap<T>().template get<id_manager::id_map<T>>();
 
 		for (auto& id : map.vec_data)
 		{

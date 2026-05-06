@@ -53,6 +53,7 @@ struct sys_lwmutex_t
 
 struct lv2_lwmutex final : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x95000000;
 
 	const lv2_protocol protocol;

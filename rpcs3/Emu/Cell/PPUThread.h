@@ -137,6 +137,7 @@ enum class ppu_debugger_mode : u32
 class ppu_thread : public cpu_thread
 {
 public:
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x01000000; // TODO (used to determine thread type)
 	static const u32 id_step = 1;
 	static const u32 id_count = 100;

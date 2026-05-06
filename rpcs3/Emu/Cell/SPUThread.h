@@ -631,6 +631,7 @@ enum class spu_block_hash : u64 {};
 class spu_thread : public cpu_thread
 {
 public:
+	using is_process_local = std::true_type;
 	virtual void dump_regs(std::string&, std::any& custom_data) const override;
 	virtual std::string dump_callstack() const override;
 	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;

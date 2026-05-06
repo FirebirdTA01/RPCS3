@@ -186,6 +186,7 @@ enum : u32
 
 struct lv2_prx final : ppu_module<lv2_obj>
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x23000000;
 
 	atomic_t<u32> state = PRX_STATE_INITIALIZED;

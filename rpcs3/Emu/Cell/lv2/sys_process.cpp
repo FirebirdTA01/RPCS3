@@ -62,14 +62,14 @@ ps3_process_info_t g_ps3_process_info;
 
 s32 process_getpid()
 {
-	// TODO: get current process id
-	return 1;
+	return ::narrow<s32>(Emu.current_process().pid());
 }
 
 s32 sys_process_getpid()
 {
-	sys_process.trace("sys_process_getpid() -> 1");
-	return process_getpid();
+	const s32 pid = process_getpid();
+	sys_process.trace("sys_process_getpid() -> %d", pid);
+	return pid;
 }
 
 s32 sys_process_getppid()

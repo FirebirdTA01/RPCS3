@@ -8,6 +8,7 @@ class ppu_thread;
 
 struct lv2_int_tag final : public lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x0a000000;
 
 	const u32 id;
@@ -20,6 +21,7 @@ struct lv2_int_tag final : public lv2_obj
 
 struct lv2_int_serv final : public lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x0b000000;
 
 	const u32 id;

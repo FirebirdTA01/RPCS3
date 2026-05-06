@@ -27,6 +27,7 @@ enum class thread_state : u32;
 class lv2_socket
 {
 public:
+	using is_process_local = std::true_type;
 	// Poll events
 	enum class poll_t
 	{

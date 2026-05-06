@@ -27,6 +27,7 @@ class ppu_thread;
 
 struct lv2_mutex final : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x85000000;
 
 	const lv2_protocol protocol;

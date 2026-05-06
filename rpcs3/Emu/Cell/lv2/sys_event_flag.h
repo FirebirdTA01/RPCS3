@@ -33,6 +33,7 @@ struct sys_event_flag_attribute_t
 
 struct lv2_event_flag final : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x98000000;
 
 	const lv2_protocol protocol;

@@ -21,6 +21,7 @@ struct sys_semaphore_attribute_t
 
 struct lv2_sema final : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x96000000;
 
 	const lv2_protocol protocol;

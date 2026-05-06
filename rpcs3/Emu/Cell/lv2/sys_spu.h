@@ -245,6 +245,7 @@ enum : u32
 
 struct lv2_spu_image : lv2_obj
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x22000000;
 
 	const u32 e_entry;
@@ -272,6 +273,7 @@ struct sys_spu_thread_group_syscall_253_info
 
 struct lv2_spu_group
 {
+	using is_process_local = std::true_type;
 	static const u32 id_base = 0x04000100;
 	static const u32 id_step = 0x100;
 	static const u32 id_count = 255;
