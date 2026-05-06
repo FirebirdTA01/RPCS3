@@ -1877,7 +1877,15 @@ namespace rsx
 				// Most mesh textures are stored as compressed to make the most of the limited memory
 				if (auto cached_texture = find_texture_from_dimensions(attr.address, attr.gcm_format, attr.width, attr.height, attr.depth))
 				{
-					return{ cached_texture->get_view(remap), cached_texture->get_context(), cached_texture->get_format_class(), scale, cached_texture->get_image_type() };
+					if (cached_texture->owner_pid && cached_texture->owner_pid != Emu.current_process().pid())
+					{
+						// Cached entry belongs to a different process — treat as miss
+						// (owner_pid=0 means pre-Phase-6 entry, backward-compatible)
+					}
+					else
+					{
+						return{ cached_texture->get_view(remap), cached_texture->get_context(), cached_texture->get_format_class(), scale, cached_texture->get_image_type() };
+					}
 				}
 
 				return {};

@@ -4,6 +4,7 @@
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/system_progress.hpp"
+#include "Emu/RSX/RSXThread.h"
 #include "Emu/system_utils.hpp"
 #include "Emu/perf_meter.hpp"
 #include "Emu/perf_monitor.hpp"
@@ -4886,6 +4887,18 @@ void Emulator::set_active_process(u32 pid)
 	// Swap g_base_addr + g_pages in lockstep
 	vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
 	vm::g_pages = m_processes[idx].vm_handle().page_flags.data();
+
+	// RSX integration: pause GPU, save outgoing state, swap context, load incoming, unpause
+	if (auto rsx = g_fxo->try_get<rsx::thread>())
+	{
+		rsx->pause();
+		rsx->wait_pause();
+		// Save (no-op — rsx_context_state fields not yet populated; deferred to Phase 7)
+		// Swap per-process RSX state pointer
+		rsx->m_rsx_state = &m_processes[idx].rsx_ctx();
+		// Load (no-op — fields still on rsx::thread; deferred to Phase 7)
+		rsx->unpause();
+	}
 
 	// Update active index
 	m_active_process_index = idx;

@@ -1064,7 +1064,8 @@ namespace rsx
 		bool triggered_exists_callbacks = false;
 		bool triggered_unreleased_callbacks = false;
 
-	protected:
+	public:
+		u32 owner_pid = 0; // Per-process isolation — rejects lookups from other processes
 
 		u16 width;
 		u16 height;

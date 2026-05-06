@@ -11,6 +11,7 @@
 #include "Utilities/bit_set.h"
 #include "util/fixed_typemap.hpp"
 #include "Emu/Memory/vm.h"
+#include "Emu/RSX/RSXContext.h"
 
 enum class system_state : u32
 {
@@ -54,6 +55,9 @@ public:
 
 	vm::vm_handle& vm_handle() { return vm; }
 	const vm::vm_handle& vm_handle() const { return vm; }
+
+	rsx::rsx_context_state& rsx_ctx() { return rsx_state; }
+	const rsx::rsx_context_state& rsx_ctx() const { return rsx_state; }
 
 	// --- display strings ---
 	const std::string& GetAppVersion() const { return m_app_version; }
@@ -233,4 +237,5 @@ private:
 	u32 m_pid = 1;
 	stx::manual_typemap<lv2_process, 0x10'0000, 32> m_local_fxo;
 	vm::vm_handle vm;
+	rsx::rsx_context_state rsx_state;
 };

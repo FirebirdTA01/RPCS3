@@ -101,6 +101,9 @@ namespace rsx
 	// TODO: This class is a mess, this needs to be broken into smaller chunks, like I did for RSXFIFO and RSXZCULL (kd)
 	class thread : public cpu_thread, public GCM_context, public GRAPH_backend
 	{
+	public:
+		// Per-process RSX state pointer — swapped on set_active_process
+		class rsx_context_state* m_rsx_state = nullptr;
 		u64 timestamp_ctrl = 0;
 		u64 timestamp_subvalue = 0;
 		u64 m_cycles_counter = 0;
