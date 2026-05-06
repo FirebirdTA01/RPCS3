@@ -365,37 +365,13 @@ void _sys_process_exit(ppu_thread& ppu, s32 status, u32 arg2, u32 arg3)
 
 		if (boot_vsh_after_exit)
 		{
-			// Clear the flag so the VSH boot chain restarts cleanly. BootGame() also clears it
-			// for non-continuous boots, but be explicit here.
-			Emu.SetLaunchedFromVsh(false);
+			// Non-destructive return to VSH: destroy game process, switch back to VSH
+			const u32 current_pid = Emu.current_process().pid();
+			sys_process.success("[VSH] non-destructive exit: destroying pid=%u, returning to VSH (pid=1)", current_pid);
 
-			Emu.current_process().RefAfterKillCallback() = []()
-			{
-				sys_process.success("[VSH] after_kill_callback firing — booting VSH");
-
-				Emu.current_process().RefArgv().clear();
-				Emu.current_process().RefEnvp().clear();
-				Emu.current_process().RefData().clear();
-				Emu.current_process().RefDisc().clear();
-				Emu.current_process().RefHdd1().clear();
-				Emu.current_process().RefKlic().clear();
-				Emu.current_process().RefInitMemContainers() = nullptr;
-
-				Emu.SetForceBoot(true);
-
-				const std::string vsh_path = g_cfg_vfs.get_dev_flash() + "/vsh/module/vsh.self";
-				const auto res = Emu.BootGame(vsh_path, "", true, cfg_mode::continuous);
-
-				sys_process.success("[VSH] BootGame(vsh.self) returned: %s", res);
-
-				if (res != game_boot_result::no_errors)
-				{
-					sys_process.fatal("Failed to relaunch VSH after game exit (path=\"%s\", error=%s)", vsh_path, res);
-				}
-			};
-
-			Emu.SetContinuousMode(true);
-			Emu.Kill(false);
+			Emu.destroy_process(current_pid);
+			Emu.set_active_process(1); // Switch back to VSH
+			Emu.resume_process(1);     // Unpark VSH threads
 		}
 		else
 		{
@@ -483,6 +459,46 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 		std::string hdd1 = vfs::get("/dev_hdd1/");
 
 		const u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
+
+		// Non-destructive VSH→game launch: create a second process and switch to it
+		if (is_from_vsh && !is_real_reboot)
+		{
+			u32 game_pid = Emu.create_process();
+			if (!game_pid)
+			{
+				sys_process.fatal("Failed to create game process — falling back to destructive launch");
+			}
+			else
+			{
+				sys_process.success("Created game process pid=%u, switching from VSH (pid=1)", game_pid);
+
+				// Dispatch to main thread — the current VSH PPU thread cannot suspend itself
+				Emu.CallFromMainThread([game_pid, disc = std::move(disc), path = std::move(path),
+					hdd1 = std::move(hdd1), klic, argv = std::move(argv), envp = std::move(envp),
+					data = std::move(data)]() mutable
+				{
+					Emu.set_active_process(game_pid); // Switches to process[1], suspends VSH
+
+					Emu.current_process().RefArgv() = std::move(argv);
+					Emu.current_process().RefEnvp() = std::move(envp);
+					Emu.current_process().RefData() = std::move(data);
+					Emu.current_process().RefDisc() = std::move(disc);
+					Emu.current_process().RefHdd1() = std::move(hdd1);
+
+					if (klic)
+					{
+						Emu.current_process().RefKlic().emplace_back(klic);
+					}
+
+					Emu.SetForceBoot(true);
+					Emu.SetLaunchedFromVsh(true);
+					sys_process.success("[VSH] non-destructive launch: marked %s as launched-from-VSH", path);
+
+					Emu.BootGame(path, "", true, cfg_mode::continuous, Emu.GetUsedConfig(), Emu.GetUsedDatabaseConfig());
+				});
+				return;
+			}
+		}
 
 		using namespace id_manager;
 

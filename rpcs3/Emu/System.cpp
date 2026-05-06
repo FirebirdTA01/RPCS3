@@ -4884,26 +4884,70 @@ void Emulator::set_active_process(u32 pid)
 
 	sys_log.notice("set_active_process: switching from pid %u to pid %u", m_active_process_index + 1, pid);
 
-	// Swap g_base_addr + g_pages in lockstep
-	vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
-	vm::g_pages = m_processes[idx].vm_handle().page_flags.data();
+	// Take exclusive lock — prevents concurrent guest-memory reads during swap
+	std::unique_lock lock(m_vm_swap_mutex);
 
-	// RSX integration: pause GPU, save outgoing state, swap context, load incoming, unpause
+	// Suspend outgoing process's PPU/SPU threads (they must stop before pointers change)
+	suspend_process(m_active_process_index + 1);
+
+	// RSX state swap. Order matters: any system thread (vblank etc.) that reads
+	// guest memory through rsx::thread fields can fire between steps. To keep
+	// every interleaving safe we (1) save outgoing state while g_base_addr still
+	// matches it, (2) zero out the rsx::thread fields so subsequent reads hit
+	// the early-return guards in sys_rsx_*, (3) swap g_base_addr/g_pages, then
+	// (4) load incoming state. Vblank reading at any point sees either matching
+	// (base_addr, fields) or a zeroed driver_info that the guards catch.
 	if (auto rsx = g_fxo->try_get<rsx::thread>())
 	{
+		// rsx->pause() blocks until rsx::thread acks via its own wait_pause poll
+		// (do NOT call wait_pause from this thread — it spins until unpause and deadlocks).
 		rsx->pause();
-		rsx->wait_pause();
-		// Save (no-op — rsx_context_state fields not yet populated; deferred to Phase 7)
-		// Swap per-process RSX state pointer
+
+		// 1. Save outgoing process's RSX state (still under outgoing g_base_addr)
+		auto& out = m_processes[m_active_process_index].rsx_ctx();
+		out.dma_address = rsx->dma_address;
+		out.driver_info = rsx->driver_info;
+		out.device_addr = rsx->device_addr;
+		out.label_addr = rsx->label_addr;
+		out.main_mem_size = rsx->main_mem_size;
+		out.local_mem_size = rsx->local_mem_size;
+		out.rsx_event_port = rsx->rsx_event_port;
+
+		// 2. Zero rsx::thread fields so any read that sneaks in before step 4
+		//    hits the !dma_address / !driver_info guards in sys_rsx_*.
+		rsx->dma_address = 0;
+		rsx->driver_info = 0;
+		rsx->ctrl = nullptr;
+
+		// 3. Swap g_base_addr + g_pages in lockstep with the rsx_state pointer
+		vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
+		vm::g_pages = m_processes[idx].vm_handle().page_flags.data();
 		rsx->m_rsx_state = &m_processes[idx].rsx_ctx();
-		// Load (no-op — fields still on rsx::thread; deferred to Phase 7)
+
+		// 4. Load incoming process's RSX state from its lv2_process slot
+		auto& in = m_processes[idx].rsx_ctx();
+		rsx->dma_address = in.dma_address;
+		rsx->driver_info = in.driver_info;
+		rsx->device_addr = in.device_addr;
+		rsx->label_addr = in.label_addr;
+		rsx->main_mem_size = in.main_mem_size;
+		rsx->local_mem_size = in.local_mem_size;
+		rsx->rsx_event_port = in.rsx_event_port;
+		rsx->ctrl = in.dma_address ? vm::_ptr<RsxDmaControl>(in.dma_address) : nullptr;
+
 		rsx->unpause();
 	}
+	else
+	{
+		// No RSX thread (headless / pre-init): just swap the VM pointers.
+		vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
+		vm::g_pages = m_processes[idx].vm_handle().page_flags.data();
+	}
 
-	// Update active index
 	m_active_process_index = idx;
 
-	// TODO: suspend/resume threads when set_active_process becomes a real context switch
+	// Resume incoming process's PPU/SPU threads (now running with correct memory)
+	resume_process(pid);
 }
 
 void Emulator::suspend_process(u32 pid)
@@ -4930,6 +4974,31 @@ void Emulator::suspend_process(u32 pid)
 			spu.state += cpu_flag::process_suspended;
 		}
 	});
+}
+
+void Emulator::destroy_process(u32 pid)
+{
+	const u32 idx = pid - 1;
+	ensure(idx < m_processes.size());
+	ensure(idx != 0); // Cannot destroy primary process
+
+	sys_log.notice("destroy_process: pid=%u idx=%u", pid, idx);
+
+	// Suspend all threads in the process first
+	suspend_process(pid);
+
+	// Release VM mappings (free the reservation)
+	vm::vm_handle& vm = m_processes[idx].vm_handle();
+	if (vm.base_addr)
+	{
+		utils::memory_release(vm.base_addr, 0x2000'0000);
+		vm.base_addr = nullptr;
+		vm.sudo_addr = nullptr;
+	}
+
+	// Mark slot as cleared (no-op for now — lv2_process is non-copyable,
+	// but the slot will be re-used via placement-new in a future create_process call)
+	sys_log.notice("destroy_process: slot %u cleared", idx);
 }
 
 void Emulator::resume_process(u32 pid)

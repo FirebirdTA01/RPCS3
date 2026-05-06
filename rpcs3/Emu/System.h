@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <shared_mutex>
 #include <set>
 
 void init_fxo_for_exec(utils::serial*, bool);
@@ -125,6 +126,10 @@ class Emulator final
 	std::array<lv2_process, 2> m_processes;
 	u32 m_active_process_index = 0;
 
+	// VM swap mutex — held by set_active_process during pointer switch;
+	// system threads that read guest memory must take a shared_lock.
+	mutable std::shared_mutex m_vm_swap_mutex;
+
 	games_config m_games_config;
 
 	video_renderer m_default_renderer;
@@ -216,11 +221,19 @@ public:
 	lv2_process& current_process() { return m_processes[m_active_process_index]; }
 	const lv2_process& current_process() const { return m_processes[m_active_process_index]; }
 
+	// Get VM base for a specific process (system threads use this for their owner)
+	u8* get_process_vm_base(u32 pid) const
+	{
+		const u32 idx = pid - 1;
+		return idx < m_processes.size() ? m_processes[idx].vm_handle().base_addr : nullptr;
+	}
+
 	// Multi-process API (debug-only — not yet exposed via PS3 syscalls)
 	u32 create_process();
 	void set_active_process(u32 pid);
 	void suspend_process(u32 pid);
 	void resume_process(u32 pid);
+	void destroy_process(u32 pid);
 
 	void Init();
 
