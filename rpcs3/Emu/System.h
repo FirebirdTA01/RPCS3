@@ -130,6 +130,8 @@ class Emulator final
 	// system threads that read guest memory must take a shared_lock.
 	mutable std::shared_mutex m_vm_swap_mutex;
 
+	bool m_co_resident_load = false;
+
 	games_config m_games_config;
 
 	video_renderer m_default_renderer;
@@ -234,6 +236,12 @@ public:
 	void suspend_process(u32 pid);
 	void resume_process(u32 pid);
 	void destroy_process(u32 pid);
+
+	// Co-resident load: when loading a second process while another is alive,
+	// destructive operations in Init/Load are skipped.
+	void EnterCoResidentLoad() noexcept { m_co_resident_load = true; }
+	void ExitCoResidentLoad() noexcept { m_co_resident_load = false; }
+	bool IsCoResidentLoad() const noexcept { return m_co_resident_load; }
 
 	void Init();
 

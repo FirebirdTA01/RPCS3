@@ -40,14 +40,21 @@ namespace vm
 		fmt::throw_exception("Failed to reserve vm memory");
 	}
 
-	// Emulated virtual memory
+	// Per-process VM layout: base (4 GiB) + sudo mirror (4 GiB) in one reservation,
+	// plus a separate 12 GiB executable reservation. set_active_process swaps the
+	// active host pointers in lockstep when switching between co-resident processes.
+	//
+	// The primary process (m_processes[0]) inherits these initial globals; each
+	// additional process gets its own independent reservation via vm_handle::allocate.
+
+	// Emulated virtual memory (4 GiB base + 4 GiB sudo mirror, contiguous)
 	u8* g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000, true);
 
-	// Unprotected virtual memory mirror
-	u8* const g_sudo_addr = g_base_addr + 0x1'0000'0000;
+	// Unprotected virtual memory mirror (= g_base_addr + 4 GiB)
+	u8* g_sudo_addr = g_base_addr + 0x1'0000'0000;
 
-	// Auxiliary virtual memory for executable areas
-	u8* const g_exec_addr = memory_reserve_4GiB(g_sudo_addr, 0x300000000);
+	// Auxiliary virtual memory for executable areas (12 GiB)
+	u8* g_exec_addr = memory_reserve_4GiB(g_sudo_addr, 0x300000000);
 
 	vm_handle& get_active_vm_handle()
 	{
@@ -59,12 +66,33 @@ namespace vm
 		if (base_addr)
 			return true; // Already allocated
 
-		base_addr = static_cast<u8*>(utils::memory_reserve(0x1000'0000, nullptr, true));
+		// Reserve the same layout as the primary globals: 8 GiB for base + sudo mirror,
+		// plus a separate 12 GiB executable reservation. Total ~20 GiB host VA per process.
+		base_addr = static_cast<u8*>(utils::memory_reserve(0x2'0000'0000, nullptr, true));
 		if (!base_addr)
 			return false;
 
-		sudo_addr = base_addr + 0x1000'0000;
+		sudo_addr = base_addr + 0x1'0000'0000;
+
+		exec_addr = static_cast<u8*>(utils::memory_reserve(0x300000000, nullptr, false));
+		if (!exec_addr)
+		{
+			utils::memory_release(base_addr, 0x2'0000'0000);
+			base_addr = nullptr;
+			sudo_addr = nullptr;
+			return false;
+		}
+
 		return true;
+	}
+
+	void init_primary_vm_handle(vm_handle& vh)
+	{
+		// Bind primary process's vm_handle to the globals set up at static init —
+		// the original 8 GiB base+sudo reservation and the 12 GiB exec reservation.
+		vh.base_addr = g_base_addr;
+		vh.sudo_addr = g_sudo_addr;
+		vh.exec_addr = g_exec_addr;
 	}
 
 	// Hooks for memory R/W interception (default: zero offset to some function with only ret instructions)

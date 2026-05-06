@@ -42,9 +42,14 @@ namespace vm
 
 	inline vm_handle& get_active_vm_handle();
 
-	extern u8* g_base_addr; // Swapped on set_active_process alongside g_pages
-	extern u8* const g_sudo_addr;
-	extern u8* const g_exec_addr;
+	// Bind the primary process's vm_handle to the globals reserved at static init.
+	// Called once during Emulator startup before set_active_process can move them.
+	void init_primary_vm_handle(vm_handle& vh);
+
+	// Swapped together by set_active_process so the active process's host mapping is current.
+	extern u8* g_base_addr;
+	extern u8* g_sudo_addr;
+	extern u8* g_exec_addr;
 	extern atomic_t<u8>* g_pages;
 	extern u8* const g_stat_addr;
 	extern u8* const g_free_addr;

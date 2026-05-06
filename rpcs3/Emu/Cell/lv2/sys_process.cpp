@@ -492,9 +492,13 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 
 					Emu.SetForceBoot(true);
 					Emu.SetLaunchedFromVsh(true);
-					sys_process.success("[VSH] non-destructive launch: marked %s as launched-from-VSH", path);
 
+					// Co-resident load: skip destructive Init/Load to keep VSH alive
+					Emu.EnterCoResidentLoad();
 					Emu.BootGame(path, "", true, cfg_mode::continuous, Emu.GetUsedConfig(), Emu.GetUsedDatabaseConfig());
+					Emu.ExitCoResidentLoad();
+
+					sys_process.success("[VSH] non-destructive launch: booted %s", path);
 				});
 				return;
 			}

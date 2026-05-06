@@ -378,6 +378,11 @@ extern void dump_executable(std::span<const u8> data, const ppu_module<lv2_obj>*
 
 void Emulator::Init()
 {
+	if (m_co_resident_load)
+	{
+		sys_log.notice("Init: co-resident load — skipping destructive init (g_fxo, config, mounts)");
+	}
+
 	// Log LLVM version
 	if (static bool logged_llvm = false; !logged_llvm)
 	{
@@ -392,6 +397,13 @@ void Emulator::Init()
 	}
 
 	jit_runtime::initialize();
+
+	// Bind primary process's vm_handle to the globals reserved at static init.
+	// Idempotent — only does work the first time around.
+	if (!m_processes[0].vm_handle().base_addr)
+	{
+		vm::init_primary_vm_handle(m_processes[0].vm_handle());
+	}
 
 	const std::string emu_dir = rpcs3::utils::get_emu_dir();
 	auto make_path_verbose = [&](const std::string& path, bool must_exist_outside_emu_dir)
@@ -435,11 +447,20 @@ void Emulator::Init()
 		}
 	}
 
-	g_fxo->reset();
+	if (!m_co_resident_load)
+	{
+		// Skip reset when a co-resident process is alive — VSH's singletons
+		// (rsx::thread, vblank, pad, audio, etc.) must survive the game boot.
+		g_fxo->reset();
+	}
 
-	// Reset defaults, cache them
-	g_cfg_vfs.from_default();
-	g_cfg.from_default();
+	if (!m_co_resident_load)
+	{
+		// Keep VSH's config when loading a co-resident game — the suspended
+		// VSH process may still reference global config state.
+		g_cfg_vfs.from_default();
+		g_cfg.from_default();
+	}
 	g_cfg.name.clear();
 
 	// Not all renderers are known at compile time, so set a provided default if possible
@@ -894,8 +915,11 @@ bool Emulator::BootRsxCapture(const std::string& path)
 	m_processes[m_active_process_index].RefState() = system_state::ready;
 	GetCallbacks().on_ready();
 
-	GetCallbacks().init_gs_render(nullptr);
-	GetCallbacks().init_pad_handler("");
+	if (!m_co_resident_load)
+	{
+		GetCallbacks().init_gs_render(nullptr);
+		GetCallbacks().init_pad_handler("");
+	}
 
 	GetCallbacks().on_run(false);
 	m_processes[m_active_process_index].RefState() = system_state::starting;
@@ -1045,6 +1069,11 @@ void Emulator::SetContinuousMode(bool continuous_mode)
 
 game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch, usz recursion_count)
 {
+	if (m_co_resident_load)
+	{
+		sys_log.notice("Load: co-resident load — preserving VSH state");
+	}
+
 	if (recursion_count == 0 && m_restrict_emu_state_change)
 	{
 		return game_boot_result::currently_restricted;
@@ -2407,6 +2436,13 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		spu_exec_object spu_exec;
 		spu_rel_object spu_rel;
 
+		// vm::init sets up the block_t allocator and zeros page_flags for the active
+		// process. Even under co-resident load it must run — pid=2's allocator/page_flags
+		// need initialization. The pre-swapped globals (base/sudo/exec) point at pid=2's
+		// reservation, so init applies to the new process.
+		// KNOWN LIMITATION: g_locations / g_reservations / g_shmem are still global; this
+		// resets them, losing the suspended process's allocator state. Round-trip back
+		// (game→VSH) is broken until those move into vm_handle. Forward (VSH→game) works.
 		vm::init();
 
 		if (ppu_exec == elf_error::ok)
@@ -2534,7 +2570,14 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 				sys_log.error("Booting HG category outside of HDD0!");
 			}
 
-			const auto _main = ensure(g_fxo->init<main_ppu_module<lv2_obj>>());
+			// Co-resident load reuses the suspended process's main_ppu_module — init returns
+			// null when the type is already present in g_fxo, so fall back to try_get.
+			auto* _main = g_fxo->init<main_ppu_module<lv2_obj>>();
+			if (!_main)
+			{
+				_main = g_fxo->try_get<main_ppu_module<lv2_obj>>();
+			}
+			ensure(_main);
 
 			if (ppu_load_exec(ppu_exec, false, m_processes[m_active_process_index].RefPath(), DeserialManager()))
 			{
@@ -4005,7 +4048,12 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 			lv2_obj::cleanup();
 
-			g_fxo->reset();
+			if (!m_co_resident_load)
+			{
+				// Skip reset when a co-resident process is alive — VSH's singletons
+				// (rsx::thread, vblank, pad, audio, etc.) must survive the game boot.
+				g_fxo->reset();
+			}
 
 			sys_log.notice("Objects cleared...");
 
@@ -4866,8 +4914,9 @@ u32 Emulator::create_process()
 		return 0;
 	}
 
-	sys_log.notice("create_process: allocated process[1] VM base=%p sudo=%p",
-		m_processes[1].vm_handle().base_addr, m_processes[1].vm_handle().sudo_addr);
+	sys_log.notice("create_process: allocated process[1] VM base=%p sudo=%p exec=%p",
+		m_processes[1].vm_handle().base_addr, m_processes[1].vm_handle().sudo_addr,
+		m_processes[1].vm_handle().exec_addr);
 	return 2; // pid = 2 (pid 1 is primary)
 }
 
@@ -4919,9 +4968,11 @@ void Emulator::set_active_process(u32 pid)
 		rsx->driver_info = 0;
 		rsx->ctrl = nullptr;
 
-		// 3. Swap g_base_addr + g_pages in lockstep with the rsx_state pointer
+		// 3. Swap base/sudo/exec/pages in lockstep with the rsx_state pointer
 		vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
-		vm::g_pages = m_processes[idx].vm_handle().page_flags.data();
+		vm::g_sudo_addr = m_processes[idx].vm_handle().sudo_addr;
+		vm::g_exec_addr = m_processes[idx].vm_handle().exec_addr;
+		vm::g_pages     = m_processes[idx].vm_handle().page_flags.data();
 		rsx->m_rsx_state = &m_processes[idx].rsx_ctx();
 
 		// 4. Load incoming process's RSX state from its lv2_process slot
@@ -4941,7 +4992,9 @@ void Emulator::set_active_process(u32 pid)
 	{
 		// No RSX thread (headless / pre-init): just swap the VM pointers.
 		vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
-		vm::g_pages = m_processes[idx].vm_handle().page_flags.data();
+		vm::g_sudo_addr = m_processes[idx].vm_handle().sudo_addr;
+		vm::g_exec_addr = m_processes[idx].vm_handle().exec_addr;
+		vm::g_pages     = m_processes[idx].vm_handle().page_flags.data();
 	}
 
 	m_active_process_index = idx;
@@ -4987,13 +5040,18 @@ void Emulator::destroy_process(u32 pid)
 	// Suspend all threads in the process first
 	suspend_process(pid);
 
-	// Release VM mappings (free the reservation)
+	// Release VM mappings (free the reservations)
 	vm::vm_handle& vm = m_processes[idx].vm_handle();
 	if (vm.base_addr)
 	{
-		utils::memory_release(vm.base_addr, 0x2000'0000);
+		utils::memory_release(vm.base_addr, 0x2'0000'0000);
 		vm.base_addr = nullptr;
 		vm.sudo_addr = nullptr;
+	}
+	if (vm.exec_addr)
+	{
+		utils::memory_release(vm.exec_addr, 0x300000000);
+		vm.exec_addr = nullptr;
 	}
 
 	// Mark slot as cleared (no-op for now — lv2_process is non-copyable,
