@@ -53,6 +53,7 @@ class cpu_thread
 {
 public:
 	u64 block_hash = 0;
+	u8* memory_base_addr = nullptr; // Set by derived class constructors from vm::g_base_addr
 
 protected:
 	cpu_thread(u32 id);

@@ -670,7 +670,6 @@ public:
 	u32 base_pc = 0;
 
 	// May be used by recompilers.
-	u8* memory_base_addr = vm::g_base_addr;
 	u8* memory_sudo_addr = vm::g_sudo_addr;
 	u8* reserv_base_addr = vm::g_reservations;
 

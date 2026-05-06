@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <array>
 #include <set>
 
 void init_fxo_for_exec(utils::serial*, bool);
@@ -120,7 +121,9 @@ class Emulator final
 	atomic_t<bool> m_emu_state_close_pending = false;
 	atomic_t<u64> m_restrict_emu_state_change{0};
 
-	lv2_process m_process;
+
+	std::array<lv2_process, 2> m_processes;
+	u32 m_active_process_index = 0;
 
 	games_config m_games_config;
 
@@ -142,7 +145,7 @@ class Emulator final
 
 	void ExecPostponedInitCode()
 	{
-		m_process.ExecPostponedInitCode();
+		m_processes[m_active_process_index].ExecPostponedInitCode();
 	}
 
 public:
@@ -194,7 +197,7 @@ public:
 
 	void PostponeInitCode(std::function<void()>&& func)
 	{
-		m_process.RefPostponedInitCode().emplace_back(std::move(func));
+		m_processes[m_active_process_index].RefPostponedInitCode().emplace_back(std::move(func));
 	}
 
 	/** Set emulator mode to running unconditionnaly.
@@ -202,76 +205,80 @@ public:
 	 */
 	void SetTestMode()
 	{
-		m_process.RefState() = system_state::running;
+		m_processes[m_active_process_index].RefState() = system_state::running;
 	}
 
 	void SetPrecompileCacheOption(emu_precompilation_option_t option)
 	{
-		m_process.SetPrecompilationOption(option);
+		m_processes[m_active_process_index].SetPrecompilationOption(option);
 	}
 
-	lv2_process& current_process() { return m_process; }
-	const lv2_process& current_process() const { return m_process; }
+	lv2_process& current_process() { return m_processes[m_active_process_index]; }
+	const lv2_process& current_process() const { return m_processes[m_active_process_index]; }
+
+	// Multi-process API (debug-only — not yet exposed via PS3 syscalls)
+	u32 create_process();
+	void set_active_process(u32 pid);
 
 	void Init();
 
 	const u32& GetBootSourceType() const
 	{
-		return m_process.GetBootSourceType();
+		return m_processes[m_active_process_index].GetBootSourceType();
 	}
 
 	const std::string& GetBoot() const
 	{
-		return m_process.GetPath();
+		return m_processes[m_active_process_index].GetPath();
 	}
 
 	const std::string& GetLastBoot() const
 	{
-		return m_process.GetPathOriginal();
+		return m_processes[m_active_process_index].GetPathOriginal();
 	}
 
 	const std::string& GetTitleID() const
 	{
-		return m_process.GetTitleID();
+		return m_processes[m_active_process_index].GetTitleID();
 	}
 
 	const std::string& GetTitle() const
 	{
-		return m_process.GetTitle();
+		return m_processes[m_active_process_index].GetTitle();
 	}
 
 	const std::string& GetLocalizedTitle() const
 	{
-		return m_process.GetLocalizedTitle();
+		return m_processes[m_active_process_index].GetLocalizedTitle();
 	}
 
 	const std::string GetTitleAndTitleID() const
 	{
-		return m_process.GetTitle() + (m_process.GetTitleID().empty() ? "" : " [" + m_process.GetTitleID() + "]");
+		return m_processes[m_active_process_index].GetTitle() + (m_processes[m_active_process_index].GetTitleID().empty() ? "" : " [" + m_processes[m_active_process_index].GetTitleID() + "]");
 	}
 
 	const std::string& GetAppVersion() const
 	{
-		return m_process.GetAppVersion();
+		return m_processes[m_active_process_index].GetAppVersion();
 	}
 
 	const std::string& GetExecutableHash() const
 	{
-		return m_process.GetExecutableHash();
+		return m_processes[m_active_process_index].GetExecutableHash();
 	}
 
-	void SetExecutableHash(std::string hash) { m_process.SetExecutableHash(std::move(hash)); }
+	void SetExecutableHash(std::string hash) { m_processes[m_active_process_index].SetExecutableHash(std::move(hash)); }
 
 	const std::string& GetCat() const
 	{
-		return m_process.GetCat();
+		return m_processes[m_active_process_index].GetCat();
 	}
 
 	const std::string& GetFakeCat() const;
 
 	const std::string& GetDir() const
 	{
-		return m_process.GetDir();
+		return m_processes[m_active_process_index].GetDir();
 	}
 
 	const std::string GetSfoDir(bool prefer_disc_sfo) const;
@@ -300,23 +307,23 @@ public:
 
 	u64 GetPauseTime() const
 	{
-		return m_process.GetPauseAmendTime();
+		return m_processes[m_active_process_index].GetPauseAmendTime();
 	}
 
 	const std::string& GetUsedConfig() const
 	{
-		return m_process.GetConfigPath();
+		return m_processes[m_active_process_index].GetConfigPath();
 	}
 
 	const std::string& GetUsedDatabaseConfig() const
 	{
 		static std::string empty_db_config;
-		return m_process.GetDbConfig() ? *m_process.GetDbConfig() : empty_db_config;
+		return m_processes[m_active_process_index].GetDbConfig() ? *m_processes[m_active_process_index].GetDbConfig() : empty_db_config;
 	}
 
 	bool IsChildProcess() const
 	{
-		return m_process.GetConfigMode() == cfg_mode::continuous;
+		return m_processes[m_active_process_index].GetConfigMode() == cfg_mode::continuous;
 	}
 
 	bool ContinuousModeEnabled(bool reset)
@@ -406,14 +413,14 @@ public:
 	bool Quit(bool force_quit);
 	static void CleanUp();
 
-	bool IsRunning() const { return m_process.GetState() == system_state::running; }
-	bool IsPaused() const { system_state state = m_process.GetState(); return state >= system_state::paused && state <= system_state::frozen; }
-	bool IsPausedOrReady() const { return m_process.GetState() >= system_state::paused; }
-	bool IsStopped(bool test_fully = false) const { return test_fully ? m_process.GetState() == system_state::stopped : m_process.GetState() <= system_state::stopping; }
-	bool IsReady()   const { return m_process.GetState() == system_state::ready; }
-	bool IsStarting() const { return m_process.GetState() == system_state::starting; }
-	void WaitReady() const { m_process.RefState().wait(system_state::ready); }
-	auto GetStatus(bool fixup = true) const { system_state state = m_process.GetState(); return fixup && state == system_state::frozen ? system_state::paused : fixup && state == system_state::stopping ? system_state::stopped : state; }
+	bool IsRunning() const { return m_processes[m_active_process_index].GetState() == system_state::running; }
+	bool IsPaused() const { system_state state = m_processes[m_active_process_index].GetState(); return state >= system_state::paused && state <= system_state::frozen; }
+	bool IsPausedOrReady() const { return m_processes[m_active_process_index].GetState() >= system_state::paused; }
+	bool IsStopped(bool test_fully = false) const { return test_fully ? m_processes[m_active_process_index].GetState() == system_state::stopped : m_processes[m_active_process_index].GetState() <= system_state::stopping; }
+	bool IsReady()   const { return m_processes[m_active_process_index].GetState() == system_state::ready; }
+	bool IsStarting() const { return m_processes[m_active_process_index].GetState() == system_state::starting; }
+	void WaitReady() const { m_processes[m_active_process_index].RefState().wait(system_state::ready); }
+	auto GetStatus(bool fixup = true) const { system_state state = m_processes[m_active_process_index].GetState(); return fixup && state == system_state::frozen ? system_state::paused : fixup && state == system_state::stopping ? system_state::stopped : state; }
 
 	bool HasGui() const { return m_has_gui; }
 	void SetHasGui(bool has_gui) { m_has_gui = has_gui; }

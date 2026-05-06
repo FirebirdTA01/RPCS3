@@ -2,6 +2,7 @@
 #include "vm_locking.h"
 #include "vm_ptr.h"
 #include "vm_reservation.h"
+#include "Emu/System.h"
 
 #include "Utilities/Thread.h"
 #include "Utilities/address_range.h"
@@ -40,13 +41,31 @@ namespace vm
 	}
 
 	// Emulated virtual memory
-	u8* const g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000, true);
+	u8* g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000, true);
 
 	// Unprotected virtual memory mirror
 	u8* const g_sudo_addr = g_base_addr + 0x1'0000'0000;
 
 	// Auxiliary virtual memory for executable areas
 	u8* const g_exec_addr = memory_reserve_4GiB(g_sudo_addr, 0x300000000);
+
+	vm_handle& get_active_vm_handle()
+	{
+		return Emu.current_process().vm_handle();
+	}
+
+	bool vm_handle::allocate()
+	{
+		if (base_addr)
+			return true; // Already allocated
+
+		base_addr = static_cast<u8*>(utils::memory_reserve(0x1000'0000, nullptr, true));
+		if (!base_addr)
+			return false;
+
+		sudo_addr = base_addr + 0x1000'0000;
+		return true;
+	}
 
 	// Hooks for memory R/W interception (default: zero offset to some function with only ret instructions)
 	u8* const g_hook_addr = memory_reserve_4GiB(g_exec_addr, 0x800000000);
@@ -83,8 +102,9 @@ namespace vm
 	// Memory range lock slots (sparse atomics)
 	atomic_t<u64, 128> g_range_lock_set[64]{};
 
-	// Memory pages
-	std::array<memory_page, 0x100000000 / 4096> g_pages;
+	// Global page table pointer — points to current process's page_flags.
+	// Future: replace with atomic pointer if concurrent allocation across processes is needed.
+	atomic_t<u8>* g_pages = Emu.current_process().vm_handle().page_flags.data();
 
 	std::pair<bool, u64> try_reservation_update(u32 addr)
 	{
@@ -222,7 +242,7 @@ namespace vm
 
 				for (u32 i = begin / 4096, max = (begin + size - 1) / 4096; i <= max; i++)
 				{
-					if (!(g_pages[i] & (vm::page_readable)))
+					if (!(get_active_vm_handle().page_flags[i] & (vm::page_readable)))
 					{
 						test = i * 4096;
 						break;
@@ -654,7 +674,7 @@ namespace vm
 			else
 			{
 				// TODO: Accurate locking in this case
-				if (!(g_pages[addr / 4096] & page_writable))
+				if (!(get_active_vm_handle().page_flags[addr / 4096] & page_writable))
 				{
 					return -1;
 				}
@@ -747,7 +767,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i])
+			if (get_active_vm_handle().page_flags[i])
 			{
 				fmt::throw_exception("Memory already mapped (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
@@ -868,7 +888,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i].exchange(flags | page_allocated))
+			if (get_active_vm_handle().page_flags[i].exchange(flags | page_allocated))
 			{
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
@@ -913,14 +933,14 @@ namespace vm
 
 			if (i < end)
 			{
-				new_val = g_pages[i];
+				new_val = get_active_vm_handle().page_flags[i];
 				new_val |= flags_set;
 				new_val &= ~flags_clear;
 			}
 
 			if (new_val != start_value)
 			{
-				const u8 old_val = g_pages[start];
+				const u8 old_val = get_active_vm_handle().page_flags[start];
 
 				if (u32 page_size = (i - start) * 4096; page_size && old_val != start_value)
 				{
@@ -936,7 +956,7 @@ namespace vm
 
 					for (u32 j = start; j < i; j++)
 					{
-						g_pages[j].release(start_value);
+						get_active_vm_handle().page_flags[j].release(start_value);
 					}
 
 					if ((old_val ^ start_value) & (page_readable | page_writable))
@@ -974,19 +994,19 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + max_size / 4096; i++)
 		{
-			if ((g_pages[i] & page_allocated) == 0)
+			if ((get_active_vm_handle().page_flags[i] & page_allocated) == 0)
 			{
 				break;
 			}
 
 			if (size == 0)
 			{
-				is_exec = !!(g_pages[i] & page_executable);
+				is_exec = !!(get_active_vm_handle().page_flags[i] & page_executable);
 			}
 			else
 			{
 				// Must be consistent
-				ensure(is_exec == !!(g_pages[i] & page_executable));
+				ensure(is_exec == !!(get_active_vm_handle().page_flags[i] & page_executable));
 			}
 
 			size += 4096;
@@ -1007,12 +1027,12 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (!(g_pages[i] & page_allocated))
+			if (!(get_active_vm_handle().page_flags[i] & page_allocated))
 			{
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, current_addr=0x%x)", addr, size, i * 4096);
 			}
 
-			g_pages[i].release(0);
+			get_active_vm_handle().page_flags[i].release(0);
 		}
 
 		// Notify rsx to invalidate range
@@ -1080,7 +1100,7 @@ namespace vm
 
 		for (u32 i = addr / 4096, max = (addr + size - 1) / 4096; i <= max;)
 		{
-			auto state = +g_pages[i];
+			auto state = +get_active_vm_handle().page_flags[i];
 
 			if (~state & flags) [[unlikely]]
 			{
@@ -1168,7 +1188,7 @@ namespace vm
 		// Check if memory area is already mapped
 		for (u32 i = addr / 4096; i <= (addr + size - 1) / 4096; i++)
 		{
-			if (g_pages[i])
+			if (get_active_vm_handle().page_flags[i])
 			{
 				return false;
 			}
@@ -1208,8 +1228,8 @@ namespace vm
 		if (this->flags & stack_guarded)
 		{
 			// Mark overflow/underflow guard pages as allocated
-			ensure(!g_pages[addr / 4096].exchange(page_allocated));
-			ensure(!g_pages[addr / 4096 + size / 4096 - 1].exchange(page_allocated));
+			ensure(!get_active_vm_handle().page_flags[addr / 4096].exchange(page_allocated));
+			ensure(!get_active_vm_handle().page_flags[addr / 4096 + size / 4096 - 1].exchange(page_allocated));
 		}
 
 		// Map "real" memory pages; provide a function to search for mirrors with private member access
@@ -1547,8 +1567,8 @@ namespace vm
 			if (flags & stack_guarded)
 			{
 				// Clear guard pages
-				ensure(g_pages[addr / 4096 - 1].exchange(0) == page_allocated);
-				ensure(g_pages[addr / 4096 + size / 4096].exchange(0) == page_allocated);
+				ensure(get_active_vm_handle().page_flags[addr / 4096 - 1].exchange(0) == page_allocated);
+				ensure(get_active_vm_handle().page_flags[addr / 4096 + size / 4096].exchange(0) == page_allocated);
 			}
 
 			// Unmap "real" memory pages
@@ -1763,7 +1783,7 @@ namespace vm
 		for (const auto& [addr, shm] : m_map)
 		{
 			// Assume first page flags represent all the map
-			ar(g_pages[addr / 4096 + !!(flags & stack_guarded)]);
+			ar(get_active_vm_handle().page_flags[addr / 4096 + !!(flags & stack_guarded)]);
 
 			ar(addr);
 			ar(shm.first);
@@ -1930,7 +1950,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i])
+			if (get_active_vm_handle().page_flags[i])
 			{
 				fmt::throw_exception("Unexpected pages allocated (current_addr=0x%x)", i * 4096);
 			}
@@ -2235,7 +2255,7 @@ namespace vm
 			g_stat_addr, g_stat_addr + 0xffff'ffff,
 			g_reservations, g_reservations + sizeof(g_reservations) - 1);
 
-			std::memset(&g_pages, 0, sizeof(g_pages));
+			std::memset(&get_active_vm_handle().page_flags, 0, sizeof(get_active_vm_handle().page_flags));
 
 			g_locations =
 			{

@@ -5,6 +5,7 @@
 #include "util/types.hpp"
 #include "util/atomic.hpp"
 #include "util/auto_typemap.hpp"
+#include "Emu/CPU/CPUThread.h"
 
 #include "util/to_endian.hpp"
 
@@ -29,9 +30,22 @@ namespace utils
 
 namespace vm
 {
-	extern u8* const g_base_addr;
+	struct vm_handle
+	{
+		u8* base_addr = nullptr;
+		u8* sudo_addr = nullptr;
+		u8* exec_addr = nullptr;
+		std::array<atomic_t<u8>, 0x100'0000> page_flags{};
+
+		bool allocate(); // Allocate host VA for this process's 256MB main RAM
+	};
+
+	inline vm_handle& get_active_vm_handle();
+
+	extern u8* g_base_addr; // Swapped on set_active_process alongside g_pages
 	extern u8* const g_sudo_addr;
 	extern u8* const g_exec_addr;
+	extern atomic_t<u8>* g_pages;
 	extern u8* const g_stat_addr;
 	extern u8* const g_free_addr;
 	extern u8 g_reservations[65536 / 128 * 64];
@@ -83,7 +97,6 @@ namespace vm
 	template <u32 Size = 1>
 	inline bool check_addr(u32 addr, u8 flags = page_readable)
 	{
-		extern std::array<memory_page, 0x100000000 / 4096> g_pages;
 
 		if (Size - 1 >= 4095u || Size & (Size - 1) || addr % Size)
 		{
@@ -97,7 +110,6 @@ namespace vm
 	// Like check_addr but should only be used in lock-free context with care
 	inline std::pair<bool, u8> get_addr_flags(u32 addr) noexcept
 	{
-		extern std::array<memory_page, 0x100000000 / 4096> g_pages;
 
 		const u8 flags = g_pages[addr / 4096].load();
 
@@ -259,12 +271,16 @@ namespace vm
 	template <typename T> requires (std::is_integral_v<decltype(+T{})>)
 	inline void* base(T addr)
 	{
-		return g_base_addr + static_cast<u32>(vm::cast(addr));
+		auto* cpu = get_current_cpu_thread();
+		u8* base = cpu ? cpu->memory_base_addr : g_base_addr;
+		return base + static_cast<u32>(vm::cast(addr));
 	}
 
 	inline const u8& read8(u32 addr)
 	{
-		return g_base_addr[addr];
+		auto* cpu = get_current_cpu_thread();
+		u8* base = cpu ? cpu->memory_base_addr : g_base_addr;
+		return base[addr];
 	}
 
 #ifdef RPCS3_HAS_MEMORY_BREAKPOINTS
@@ -273,7 +289,9 @@ namespace vm
 	inline void write8(u32 addr, u8 value)
 #endif
 	{
-		g_base_addr[addr] = value;
+		auto* cpu = get_current_cpu_thread();
+		u8* base = cpu ? cpu->memory_base_addr : g_base_addr;
+		base[addr] = value;
 
 #ifdef RPCS3_HAS_MEMORY_BREAKPOINTS
 		if (ppu && g_breakpoint_handler.HasBreakpoint(addr, breakpoint_types::bp_write))

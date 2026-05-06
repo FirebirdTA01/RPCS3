@@ -1038,13 +1038,17 @@ struct ppu_far_jumps_t
 
 		if (!it->second.func)
 		{
+			// Known limitation: JIT far-jump trampolines embed base+pc at build time —
+			// not safe across process switches. Resolution: rewrite trampolines to load
+			// active base at runtime. Needed before cross-process JIT execution can be supported.
+			// See build-function trampoline below (lines ~1047, ~1061).
 			it->second.func = build_function_asm<ppu_intrp_func_t>("", [&](native_asm& c, auto& args)
 			{
 				using namespace asmjit;
 
 #ifdef ARCH_X64
 				c.mov(args[0], x86::rbp);
-				c.mov(args[2], vm::g_base_addr + pc); // TODO: per-process base requires runtime resolution
+				c.mov(args[2], vm::g_base_addr + pc); // TODO: requires runtime base resolution for cross-process JIT execution
 				c.jmp(ppu_far_jump);
 #else
 				Label jmp_address = c.newLabel();
@@ -1058,7 +1062,7 @@ struct ppu_far_jumps_t
 				c.bind(jmp_address);
 				c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
 				c.bind(this_op_address);
-				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc); // TODO: per-process base requires runtime resolution
+				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc); // TODO: requires runtime base resolution for cross-process JIT execution
 #endif
 			}, &rt);
 		}
@@ -2401,7 +2405,7 @@ void ppu_thread::exec_task()
 	}
 
 	const auto cache = vm::g_exec_addr;
-	const auto mem_ = vm::g_base_addr; // TODO: per-process base requires runtime resolution
+	const auto mem_ = vm::g_base_addr;
 
 	while (true)
 	{

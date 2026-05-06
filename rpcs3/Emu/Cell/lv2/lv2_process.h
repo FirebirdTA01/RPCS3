@@ -10,6 +10,7 @@
 #include "Emu/config_mode.h"
 #include "Utilities/bit_set.h"
 #include "util/fixed_typemap.hpp"
+#include "Emu/Memory/vm.h"
 
 enum class system_state : u32
 {
@@ -50,6 +51,9 @@ public:
 
 	stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() { return m_local_fxo; }
 	const stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() const { return m_local_fxo; }
+
+	vm::vm_handle& vm_handle() { return vm; }
+	const vm::vm_handle& vm_handle() const { return vm; }
 
 	// --- display strings ---
 	const std::string& GetAppVersion() const { return m_app_version; }
@@ -228,4 +232,5 @@ private:
 	atomic_t<system_state> m_state{system_state::stopped};
 	u32 m_pid = 1;
 	stx::manual_typemap<lv2_process, 0x10'0000, 32> m_local_fxo;
+	vm::vm_handle vm;
 };
