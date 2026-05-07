@@ -1766,9 +1766,17 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 	auto target = +g_ppu;
 	usz i = 0;
 
-	// Suspend threads if necessary
-	for (usz thread_count = g_cfg.core.ppu_threads; target; target = target->next_ppu, i++)
+	// Suspend threads past the N-thread scheduler window. process_suspended
+	// threads (belonging to a non-active process) are not scheduled and must
+	// not consume slots in the window, otherwise active-process threads at the
+	// tail of g_ppu never get a slot to run.
+	for (usz thread_count = g_cfg.core.ppu_threads; target; target = target->next_ppu)
 	{
+		if (target->state & cpu_flag::process_suspended)
+		{
+			continue;
+		}
+
 		if (i >= thread_count && cpu_flag::suspend - target->state)
 		{
 			ppu_log.trace("suspend(): %s", target->id);
@@ -1781,6 +1789,8 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 				target->state.notify_one();
 			}
 		}
+
+		i++;
 	}
 
 	const auto current_ppu = cpu_thread::get_current<ppu_thread>();
@@ -1841,10 +1851,21 @@ void lv2_obj::schedule_all(u64 current_time)
 	if (!g_pending && g_scheduler_ready)
 	{
 		auto target = +g_ppu;
+		usz remaining = g_cfg.core.ppu_threads;
 
-		// Wake up threads
-		for (usz x = g_cfg.core.ppu_threads; target && x; target = target->next_ppu, x--)
+		// Wake up threads. process_suspended threads belong to a process that
+		// is not the active one (suspend_process tagged them); they should not
+		// occupy slots in the N=ppu_threads scheduler window, otherwise the
+		// launched process's threads sit in g_ppu past position N and never
+		// get suspend cleared.
+		while (target && remaining)
 		{
+			if (target->state & cpu_flag::process_suspended)
+			{
+				target = target->next_ppu;
+				continue;
+			}
+
 			if (target->state & cpu_flag::suspend)
 			{
 				ppu_log.trace("schedule(): %s", target->id);
@@ -1856,6 +1877,8 @@ void lv2_obj::schedule_all(u64 current_time)
 
 				if ((target->state.fetch_op(AOFN(x += cpu_flag::signal, x -= cpu_flag::suspend, x-= remove_yield, void())) & (cpu_flag::wait + cpu_flag::signal)) != cpu_flag::wait)
 				{
+					target = target->next_ppu;
+					remaining--;
 					continue;
 				}
 
@@ -1869,6 +1892,9 @@ void lv2_obj::schedule_all(u64 current_time)
 					*it++ = &target->state;
 				}
 			}
+
+			target = target->next_ppu;
+			remaining--;
 		}
 	}
 

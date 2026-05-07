@@ -49,6 +49,7 @@ public:
 	const atomic_t<system_state>& RefState() const { return m_state; }
 
 	u32 pid() const { return m_pid; }
+	void set_pid(u32 pid) { m_pid = pid; }
 
 	stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() { return m_local_fxo; }
 	const stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() const { return m_local_fxo; }

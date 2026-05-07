@@ -2741,6 +2741,17 @@ void Emulator::Run(bool start_playtime)
 	{
 		Emu.GetCallbacks().enable_gamemode(true);
 	}
+
+	// RSX init at RSXThread.cpp owns the first-boot RunPPU trigger so that PPU
+	// threads only have cpu_flag::stop cleared once the GPU is up. That trigger
+	// is a one-shot. For subsequent transitions to Starting (co-resident launch
+	// of a second process: VSH→game) RSX is already past init, so fire RunPPU
+	// directly — otherwise the new process's PPU threads sit in cpu_thread::
+	// operator() with stop set and never enter cpu_task.
+	if (auto rsx = g_fxo->try_get<rsx::thread>(); rsx && rsx->is_initialized)
+	{
+		RunPPU();
+	}
 }
 
 void Emulator::RunPPU()
@@ -4945,6 +4956,11 @@ u32 Emulator::create_process()
 		return 0;
 	}
 
+	// lv2_process::m_pid defaults to 1; set per-process so current_process().pid()
+	// returns the correct value when the active process is the second one.
+	m_processes[0].set_pid(1);
+	m_processes[1].set_pid(2);
+
 	sys_log.notice("create_process: allocated process[1] VM base=%p sudo=%p exec=%p",
 		m_processes[1].vm_handle().base_addr, m_processes[1].vm_handle().sudo_addr,
 		m_processes[1].vm_handle().exec_addr);
@@ -5023,6 +5039,9 @@ void Emulator::set_active_process(u32 pid)
 		// read of m_rsx_state->m_framebuffer_layout->X under a null pointer.)
 		rsx->bind_rsx_state_pointers(&in);
 
+		const u32 out_dma = m_processes[m_active_process_index].rsx_ctx().dma_address;
+		const u32 in_dma  = in.dma_address;
+
 		rsx->dma_address = in.dma_address;
 		rsx->driver_info = in.driver_info;
 		rsx->device_addr = in.device_addr;
@@ -5031,6 +5050,9 @@ void Emulator::set_active_process(u32 pid)
 		rsx->local_mem_size = in.local_mem_size;
 		rsx->rsx_event_port = in.rsx_event_port;
 		rsx->ctrl = in.dma_address ? vm::_ptr<RsxDmaControl>(in.dma_address) : nullptr;
+
+		sys_log.notice("set_active_process: RSX swap out_dma=0x%x in_dma=0x%x ctrl=%p",
+			out_dma, in_dma, static_cast<void*>(rsx->ctrl));
 
 		// FIFO_control caches the RsxDmaControl pointer at construction; refresh it
 		// now so the FIFO loop reads the active process's DMA control. Without this
@@ -5071,23 +5093,69 @@ void Emulator::suspend_process(u32 pid)
 
 	sys_log.notice("suspend_process: pid=%u", pid);
 
-	// Set process_suspended flag on all PPU threads belonging to this process
-	idm::select<ppu_thread>([&](u32, ppu_thread& ppu)
+	std::vector<cpu_thread*> targets;
+
+	idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& ppu)
 	{
 		if (ppu.owner_pid == pid)
 		{
 			ppu.state += cpu_flag::process_suspended;
+			ppu.state += cpu_flag::yield;
+			ppu.state.notify_one();
+			targets.push_back(&ppu);
 		}
 	});
 
-	// Same for SPU threads
-	idm::select<spu_thread>([&](u32, spu_thread& spu)
+	idm::select<named_thread<spu_thread>>([&](u32, named_thread<spu_thread>& spu)
 	{
 		if (spu.owner_pid == pid)
 		{
 			spu.state += cpu_flag::process_suspended;
+			spu.state += cpu_flag::yield;
+			spu.state.notify_one();
+			targets.push_back(&spu);
 		}
 	});
+
+	// Synchronous park barrier. process_suspended makes every thread call
+	// cpu_wait at its next check_state, but JIT'd guest code only reaches a
+	// check_state at well-defined boundaries (syscall, branch hint, etc.) —
+	// without a barrier, set_active_process can swap g_base_addr while a
+	// suspended-but-not-yet-parked thread is mid-instruction, racing the
+	// memory read against the swap. Poll each target until it reports both
+	// process_suspended and wait observable in state. Timeout 5s with a
+	// warning; downstream code (FIFO_control) is null/empty-safe so a missed
+	// barrier degrades but does not crash.
+	const u64 deadline = get_system_time() + 5'000'000;
+
+	for (cpu_thread* t : targets)
+	{
+		while (true)
+		{
+			const auto s = +t->state;
+
+			if ((s & cpu_flag::process_suspended) && (s & cpu_flag::wait))
+			{
+				break;
+			}
+
+			if (s & (cpu_flag::exit + cpu_flag::stop))
+			{
+				break; // already gone or never started
+			}
+
+			if (get_system_time() >= deadline || Emu.IsStopped())
+			{
+				sys_log.warning("suspend_process(pid=%u): thread did not park within timeout (state=0x%x)",
+					pid, static_cast<u32>(+t->state));
+				break;
+			}
+
+			std::this_thread::yield();
+		}
+	}
+
+	sys_log.notice("suspend_process: pid=%u barrier complete (%zu threads parked)", pid, targets.size());
 }
 
 void Emulator::destroy_process(u32 pid)
@@ -5128,20 +5196,22 @@ void Emulator::resume_process(u32 pid)
 	sys_log.notice("resume_process: pid=%u", pid);
 
 	// Clear process_suspended flag on all PPU threads belonging to this process
-	idm::select<ppu_thread>([&](u32, ppu_thread& ppu)
+	idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& ppu)
 	{
 		if (ppu.owner_pid == pid)
 		{
 			ppu.state -= cpu_flag::process_suspended;
+			ppu.state.notify_one();
 		}
 	});
 
 	// Same for SPU threads
-	idm::select<spu_thread>([&](u32, spu_thread& spu)
+	idm::select<named_thread<spu_thread>>([&](u32, named_thread<spu_thread>& spu)
 	{
 		if (spu.owner_pid == pid)
 		{
 			spu.state -= cpu_flag::process_suspended;
+			spu.state.notify_one();
 		}
 	});
 }

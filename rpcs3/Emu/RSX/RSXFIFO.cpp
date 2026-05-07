@@ -33,6 +33,22 @@ namespace rsx
 		void FIFO_control::rebind_ctrl()
 		{
 			m_ctrl = m_thread->ctrl;
+
+			// Process boundary: reset internal command-stream state. When swapping
+			// to a process whose DMA isn't set up yet (m_ctrl==nullptr) the FIFO
+			// loop must observe an "empty" buffer (put==get) and not dereference
+			// stale state from the outgoing process. When swapping back to a real
+			// ctrl, start at the ctrl's reported get position.
+			m_internal_get = m_ctrl ? +m_ctrl->get : 0u;
+			m_remaining_commands = 0;
+			m_command_reg = 0;
+			m_command_inc = 0;
+			m_args_ptr = 0;
+			m_cmd = ~0u;
+			m_cache_size = 0;
+			m_cache_addr = 0;
+			m_memwatch_addr = 0;
+			m_memwatch_cmp = 0;
 		}
 
 		u32 FIFO_control::translate_address(u32 address) const
@@ -42,11 +58,13 @@ namespace rsx
 
 		void FIFO_control::sync_get() const
 		{
+			if (!m_ctrl) [[unlikely]] { return; }
 			m_ctrl->get.release(m_internal_get);
 		}
 
 		void FIFO_control::restore_state(u32 cmd, u32 count)
 		{
+			if (!m_ctrl) [[unlikely]] { return; }
 			m_cmd = cmd;
 			m_command_inc = ((m_cmd & RSX_METHOD_NON_INCREMENT_CMD_MASK) == RSX_METHOD_NON_INCREMENT_CMD) ? 0 : 4;
 			m_remaining_commands = count;
@@ -76,6 +94,12 @@ namespace rsx
 		template <bool Full>
 		inline u32 FIFO_control::read_put() const
 		{
+			// Co-resident process swap leaves m_ctrl null when the incoming
+			// process has not yet called sys_rsx_context_allocate. Report
+			// put==get so the FIFO loop sees an empty buffer and idles until
+			// rebind_ctrl is called with a real ctrl.
+			if (!m_ctrl) [[unlikely]] { return m_internal_get; }
+
 			if constexpr (!Full)
 			{
 				return m_ctrl->put & ~3;
@@ -215,6 +239,13 @@ namespace rsx
 		void FIFO_control::set_get(u32 get, u32 spin_cmd)
 		{
 			invalidate_cache();
+
+			if (!m_ctrl) [[unlikely]]
+			{
+				m_internal_get = get;
+				m_remaining_commands = 0;
+				return;
+			}
 
 			if (spin_cmd && m_ctrl->get == get)
 			{
@@ -427,7 +458,14 @@ namespace rsx
 
 			if (!count)
 			{
-				m_ctrl->get.release(m_internal_get += 4);
+				if (m_ctrl) [[likely]]
+				{
+					m_ctrl->get.release(m_internal_get += 4);
+				}
+				else
+				{
+					m_internal_get += 4;
+				}
 				data.reg = FIFO_NOP;
 				return;
 			}

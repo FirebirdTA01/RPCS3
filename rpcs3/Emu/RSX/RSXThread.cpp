@@ -1147,7 +1147,10 @@ namespace rsx
 			// Note a possible rollback address
 			if (sync_point_request && !in_begin_end)
 			{
-				restore_point = ctrl->get;
+				if (ctrl) [[likely]]
+				{
+					restore_point = ctrl->get;
+				}
 				saved_fifo_ret = fifo_ret_addr;
 				sync_point_request.release(false);
 			}
@@ -2451,8 +2454,19 @@ namespace rsx
 		flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;
 		fifo_ret_addr = RSX_CALL_STACK_EMPTY;
 
+		rsx_log.notice("rsx::thread::init: dma_address=0x%x ctrl=%p", ctrlAddress, static_cast<void*>(ctrl));
+
 		vm::write32(device_addr + 0x30, 1);
 		std::memset(display_buffers, 0, sizeof(display_buffers));
+
+		// Co-resident launch path: when a second process calls
+		// sys_rsx_context_allocate, ctrl flips from null (left by the
+		// set_active_process swap) to a real pointer. Refresh the cached
+		// pointer in fifo_ctrl so the FIFO loop reads from the new ctrl.
+		if (fifo_ctrl)
+		{
+			fifo_ctrl->rebind_ctrl();
+		}
 
 		rsx_thread_running = true;
 	}

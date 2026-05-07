@@ -747,6 +747,11 @@ void cpu_thread::operator()()
 	cleanup.name = thread_ctrl::get_name();
 	cleanup.log_prefix = old_prefix;
 
+	sys_log.warning("CPU_LOOP_ENTRY: name=%s id=0x%x pid=%u",
+		thread_ctrl::get_name(), id, owner_pid);
+
+	bool cpu_task_first_entry = true;
+
 	// Check thread status
 	while (!(state & cpu_flag::exit) && thread_ctrl::state() != thread_state::aborting)
 	{
@@ -760,6 +765,13 @@ void cpu_thread::operator()()
 
 		if (!(state0 & cpu_flag::stop))
 		{
+			if (cpu_task_first_entry)
+			{
+				cpu_task_first_entry = false;
+				sys_log.warning("CPU_TASK_FIRST: name=%s id=0x%x pid=%u",
+					thread_ctrl::get_name(), id, owner_pid);
+			}
+
 			cpu_task();
 			state += cpu_flag::wait;
 
