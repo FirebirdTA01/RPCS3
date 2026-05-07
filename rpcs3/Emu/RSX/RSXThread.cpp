@@ -687,16 +687,19 @@ namespace rsx
 		}
 	}
 
+	void thread::bind_rsx_state_pointers(rsx_context_state* state)
+	{
+		state->m_surface_info = m_surface_info;
+		state->m_depth_surface_info = &m_depth_surface_info;
+		state->m_framebuffer_layout = &m_framebuffer_layout;
+		state->m_graphics_state = &m_graphics_state;
+	}
+
 	thread::thread(utils::serial* _ar)
 		: cpu_thread(0x5555'5555)
 	{
 		m_rsx_state = &Emu.current_process().rsx_ctx();
-
-		// Initialize rsx_context_state pointers to actual fields on rsx::thread
-		m_rsx_state->m_surface_info = m_surface_info;
-		m_rsx_state->m_depth_surface_info = &m_depth_surface_info;
-		m_rsx_state->m_framebuffer_layout = &m_framebuffer_layout;
-		m_rsx_state->m_graphics_state = &m_graphics_state;
+		bind_rsx_state_pointers(m_rsx_state);
 
 		g_access_violation_handler = [this](u32 address, bool is_writing)
 		{

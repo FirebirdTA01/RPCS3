@@ -156,6 +156,12 @@ namespace rsx
 			std::pair<bool, u32> fetch_u32(u32 addr);
 			void invalidate_cache() { m_cache_size = 0; }
 
+			// Refresh the cached RsxDmaControl pointer from the owning rsx::thread.
+			// Called from Emulator::set_active_process after rsx->ctrl swaps so the
+			// FIFO loop reads the active process's DMA control rather than the
+			// stale pointer captured at construction.
+			void rebind_ctrl();
+
 			u32 get_pos() const { return m_internal_get; }
 			u32 last_cmd() const { return m_cmd; }
 			void sync_get() const;

@@ -5013,6 +5013,16 @@ void Emulator::set_active_process(u32 pid)
 
 		// 4. Load incoming process's RSX state from its lv2_process slot
 		auto& in = m_processes[idx].rsx_ctx();
+
+		// rsx_context_state stores BOTH per-process FIFO/DMA values (saved/restored
+		// on swap) AND constant pointers into the rsx::thread instance for the
+		// framebuffer / graphics state structs (always rebound to the live thread).
+		// The ctor binds these pointers for the first process only — every
+		// subsequent process needs them rebound here so reads through m_rsx_state->
+		// don't dereference null. (The 0x44-offset RSX segfault on launch was a
+		// read of m_rsx_state->m_framebuffer_layout->X under a null pointer.)
+		rsx->bind_rsx_state_pointers(&in);
+
 		rsx->dma_address = in.dma_address;
 		rsx->driver_info = in.driver_info;
 		rsx->device_addr = in.device_addr;
@@ -5021,6 +5031,16 @@ void Emulator::set_active_process(u32 pid)
 		rsx->local_mem_size = in.local_mem_size;
 		rsx->rsx_event_port = in.rsx_event_port;
 		rsx->ctrl = in.dma_address ? vm::_ptr<RsxDmaControl>(in.dma_address) : nullptr;
+
+		// FIFO_control caches the RsxDmaControl pointer at construction; refresh it
+		// now so the FIFO loop reads the active process's DMA control. Without this
+		// the loop dereferences VSH's old pointer (which may be unmapped or point
+		// into the wrong process's VM after the swap) and segfaults at the offset
+		// of the get/put fields (0x44 / 0x40).
+		if (rsx->fifo_ctrl)
+		{
+			rsx->fifo_ctrl->rebind_ctrl();
+		}
 
 		rsx->unpause();
 	}

@@ -111,6 +111,13 @@ namespace rsx
 		display_flip_info_t m_queued_flip{};
 
 		void cpu_task() override;
+
+		// Bind a per-process rsx_context_state to the constant pointers that target
+		// the framebuffer / surface info / graphics state structs on this rsx::thread
+		// instance. Called from the ctor for the first process and from
+		// Emulator::set_active_process for every subsequent swap so reads through
+		// m_rsx_state-> never dereference null.
+		void bind_rsx_state_pointers(rsx_context_state* state);
 	protected:
 
 		s32 m_skip_frame_ctr = 0;

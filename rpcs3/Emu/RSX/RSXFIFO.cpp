@@ -30,6 +30,11 @@ namespace rsx
 			m_iotable = &pctrl->iomap_table;
 		}
 
+		void FIFO_control::rebind_ctrl()
+		{
+			m_ctrl = m_thread->ctrl;
+		}
+
 		u32 FIFO_control::translate_address(u32 address) const
 		{
 			return m_iotable->get_addr(address);
