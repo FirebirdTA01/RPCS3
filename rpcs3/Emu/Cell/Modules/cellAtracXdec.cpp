@@ -800,7 +800,7 @@ error_code _CellAdecCoreOpOpenExt_atracx(ppu_thread& ppu, vm::ptr<AtracXdecConte
 	ensure(lv2_syscall<sys_mutex_unlock>(ppu, handle->output_mutex) == CELL_OK);
 
 	const vm::var<char[]> _name = vm::make_str("HLE ATRAC3plus decoder");
-	const auto entry = g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(atracXdecEntry));
+	const auto entry = fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(atracXdecEntry));
 	ppu_execute<&sys_ppu_thread_create>(ppu, handle.ptr(&AtracXdecContext::thread_id), entry, handle.addr(), +res->ppuThreadPriority, +res->ppuThreadStackSize, SYS_PPU_THREAD_CREATE_JOINABLE, +_name);
 
 	return CELL_OK;
@@ -960,39 +960,39 @@ u32 _CellAdecCoreOpGetBsiInfoSize_atracx()
 
 static void init_gvar(vm::gvar<CellAdecCoreOps>& var)
 {
-	var->open.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpen_atracx)));
-	var->close.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpClose_atracx)));
-	var->startSeq.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpStartSeq_atracx)));
-	var->endSeq.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpEndSeq_atracx)));
-	var->decodeAu.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpDecodeAu_atracx)));
-	var->getVersion.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetVersion_atracx)));
-	var->realign.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpRealign_atracx)));
-	var->releasePcm.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpReleasePcm_atracx)));
-	var->getPcmHandleNum.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetPcmHandleNum_atracx)));
-	var->getBsiInfoSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetBsiInfoSize_atracx)));
-	var->openExt.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpenExt_atracx)));
+	var->open.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpen_atracx)));
+	var->close.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpClose_atracx)));
+	var->startSeq.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpStartSeq_atracx)));
+	var->endSeq.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpEndSeq_atracx)));
+	var->decodeAu.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpDecodeAu_atracx)));
+	var->getVersion.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetVersion_atracx)));
+	var->realign.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpRealign_atracx)));
+	var->releasePcm.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpReleasePcm_atracx)));
+	var->getPcmHandleNum.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetPcmHandleNum_atracx)));
+	var->getBsiInfoSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetBsiInfoSize_atracx)));
+	var->openExt.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpenExt_atracx)));
 }
 
 DECLARE(ppu_module_manager::cellAtracXdec)("cellAtracXdec", []()
 {
 	REG_VNID(cellAtracXdec, 0x076b33ab, g_cell_adec_core_ops_atracx2ch).init = []()
 	{
-		g_cell_adec_core_ops_atracx2ch->getMemSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<2>)));
+		g_cell_adec_core_ops_atracx2ch->getMemSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<2>)));
 		init_gvar(g_cell_adec_core_ops_atracx2ch);
 	};
 	REG_VNID(cellAtracXdec, 0x1d210eaa, g_cell_adec_core_ops_atracx6ch).init = []()
 	{
-		g_cell_adec_core_ops_atracx6ch->getMemSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<6>)));
+		g_cell_adec_core_ops_atracx6ch->getMemSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<6>)));
 		init_gvar(g_cell_adec_core_ops_atracx6ch);
 	};
 	REG_VNID(cellAtracXdec, 0xe9a86e54, g_cell_adec_core_ops_atracx8ch).init = []()
 	{
-		g_cell_adec_core_ops_atracx8ch->getMemSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<8>)));
+		g_cell_adec_core_ops_atracx8ch->getMemSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<8>)));
 		init_gvar(g_cell_adec_core_ops_atracx8ch);
 	};
 	REG_VNID(cellAtracXdec, 0x4944af9a, g_cell_adec_core_ops_atracx).init = []()
 	{
-		g_cell_adec_core_ops_atracx->getMemSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<8>)));
+		g_cell_adec_core_ops_atracx->getMemSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_atracx<8>)));
 		init_gvar(g_cell_adec_core_ops_atracx);
 	};
 

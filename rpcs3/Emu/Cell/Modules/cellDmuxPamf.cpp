@@ -2071,9 +2071,9 @@ error_code _CellDmuxCoreOpOpen(ppu_thread& ppu, vm::cptr<CellDmuxPamfSpecificInf
 	const CellDmuxPamfResource res{ demuxerResource->ppuThreadPriority, demuxerResource->ppuThreadStackSize, demuxerResource->numOfSpus, demuxerResource->spuThreadPriority,
 		vm::bptr<void>::make(demuxerResource->memAddr.addr() + sizeof(CellDmuxPamfHandle)), demuxerResource->memSize - sizeof(CellDmuxPamfHandle) };
 
-	const auto demux_done_func = vm::bptr<DmuxNotifyDemuxDone>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfNotifyDemuxDone)));
-	const auto prog_end_code_func = vm::bptr<DmuxNotifyProgEndCode>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfNotifyProgEndCode)));
-	const auto fatal_err_func = vm::bptr<DmuxNotifyFatalErr>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfNotifyFatalErr)));
+	const auto demux_done_func = vm::bptr<DmuxNotifyDemuxDone>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfNotifyDemuxDone)));
+	const auto prog_end_code_func = vm::bptr<DmuxNotifyProgEndCode>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfNotifyProgEndCode)));
+	const auto fatal_err_func = vm::bptr<DmuxNotifyFatalErr>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfNotifyFatalErr)));
 
 	const error_code ret = DmuxPamfContext::open(ppu, res, demuxerResourceSpurs, { demux_done_func, _handle }, { prog_end_code_func, _handle }, { fatal_err_func, _handle }, _handle->demuxer);
 
@@ -2200,7 +2200,7 @@ error_code _CellDmuxCoreOpResetStream(ppu_thread& ppu, vm::ptr<CellDmuxPamfHandl
 error_code DmuxPamfContext::create_thread(ppu_thread& ppu)
 {
 	const vm::var<char[]> name = vm::make_str("HLE PAMF demuxer");
-	const auto entry = g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfEntry));
+	const auto entry = fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfEntry));
 
 	if (ppu_execute<&sys_ppu_thread_create>(ppu, _this.ptr(&DmuxPamfContext::thread_id), entry, +_this.addr(), +resource.ppuThreadPriority, +resource.ppuThreadStackSize, SYS_PPU_THREAD_CREATE_JOINABLE, +name) != CELL_OK)
 	{
@@ -2608,8 +2608,8 @@ error_code _CellDmuxCoreOpEnableEs(ppu_thread& ppu, vm::ptr<CellDmuxPamfHandle> 
 	es_handle->notify_au_found = *notifyAuFound;
 	es_handle->notify_flush_done = *notifyFlushDone;
 
-	const auto au_found_func = vm::bptr<DmuxEsNotifyAuFound>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfEsNotifyAuFound)));
-	const auto flush_done_func = vm::bptr<DmuxEsNotifyFlushDone>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfEsNotifyFlushDone)));
+	const auto au_found_func = vm::bptr<DmuxEsNotifyAuFound>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfEsNotifyAuFound)));
+	const auto flush_done_func = vm::bptr<DmuxEsNotifyFlushDone>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(dmuxPamfEsNotifyFlushDone)));
 
 	const auto [stream_id, private_stream_id, is_avc] = get_stream_ids<raw_es>(esFilterId);
 
@@ -2857,20 +2857,20 @@ error_code _CellDmuxCoreOpResetStreamAndWaitDone(ppu_thread& ppu, vm::ptr<CellDm
 template <bool raw_es>
 static void init_gvar(const vm::gvar<CellDmuxCoreOps>& var)
 {
-	var->queryAttr.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpQueryAttr)));
-	var->open.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpOpen)));
-	var->close.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpClose)));
-	var->resetStream.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpResetStream)));
-	var->createThread.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpCreateThread)));
-	var->joinThread.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpJoinThread)));
-	var->setStream.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpSetStream<raw_es>)));
-	var->releaseAu.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpReleaseAu)));
-	var->queryEsAttr.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpQueryEsAttr<raw_es>)));
-	var->enableEs.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpEnableEs<raw_es>)));
-	var->disableEs.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpDisableEs)));
-	var->flushEs.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpFlushEs)));
-	var->resetEs.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpResetEs)));
-	var->resetStreamAndWaitDone.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpResetStreamAndWaitDone)));
+	var->queryAttr.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpQueryAttr)));
+	var->open.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpOpen)));
+	var->close.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpClose)));
+	var->resetStream.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpResetStream)));
+	var->createThread.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpCreateThread)));
+	var->joinThread.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpJoinThread)));
+	var->setStream.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpSetStream<raw_es>)));
+	var->releaseAu.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpReleaseAu)));
+	var->queryEsAttr.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpQueryEsAttr<raw_es>)));
+	var->enableEs.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpEnableEs<raw_es>)));
+	var->disableEs.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpDisableEs)));
+	var->flushEs.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpFlushEs)));
+	var->resetEs.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpResetEs)));
+	var->resetStreamAndWaitDone.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellDmuxCoreOpResetStreamAndWaitDone)));
 }
 
 DECLARE(ppu_module_manager::cellDmuxPamf)("cellDmuxPamf", []

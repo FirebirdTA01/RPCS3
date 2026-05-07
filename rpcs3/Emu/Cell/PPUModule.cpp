@@ -154,9 +154,15 @@ void ppu_module_manager::initialize_modules()
 	}
 }
 
-// Global linkage information
+// Per-process linkage information. Each process loads its own EBOOT/PRX set
+// into its own VM, so module function/variable export_addr values are guest
+// addresses valid only in that process. A single global instance would bake
+// pid=1's addresses into pid=2's import stubs and crash on the first HLE call
+// after a co-resident swap.
 struct ppu_linkage_info
 {
+	using is_process_local = std::true_type;
+
 	ppu_linkage_info() = default;
 
 	ppu_linkage_info(const ppu_linkage_info&) = delete;
@@ -346,7 +352,7 @@ static void ppu_initialize_modules(ppu_linkage_info* link, utils::serial* ar = n
 	// Initialize double-purpose fake OPD array for HLE functions
 	const auto& hle_funcs = ppu_function_manager::get(g_cfg.core.ppu_decoder != ppu_decoder_type::_static);
 
-	u32& hle_funcs_addr = g_fxo->get<ppu_function_manager>().addr;
+	u32& hle_funcs_addr = fxo::get<ppu_function_manager>().addr;
 
 	// Allocate memory for the array (must be called after fixed allocations)
 	if (!hle_funcs_addr)
@@ -461,7 +467,15 @@ static void ppu_initialize_modules(ppu_linkage_info* link, utils::serial* ar = n
 	}
 	else
 	{
-		ensure(g_fxo->init<hle_vars_save>());
+		// hle_vars_save lives in g_fxo (emulator-wide). Under co-resident
+		// load ppu_initialize_modules runs again under pid=2 (because
+		// ppu_linkage_info is per-process), and the global hle_vars_save
+		// has already been initialized by pid=1's pass. init<>() returns
+		// nullptr in that case; only ensure when actually creating.
+		if (!g_fxo->is_init<hle_vars_save>())
+		{
+			ensure(g_fxo->init<hle_vars_save>());
+		}
 	}
 
 	for (auto& pair : ppu_module_manager::get())
@@ -481,7 +495,7 @@ static void ppu_initialize_modules(ppu_linkage_info* link, utils::serial* ar = n
 			auto& flink = linkage.functions[function.first];
 
 			flink.static_func = &function.second;
-			flink.export_addr = g_fxo->get<ppu_function_manager>().func_addr(function.second.index);
+			flink.export_addr = fxo::get<ppu_function_manager>().func_addr(function.second.index);
 			function.second.export_addr = &flink.export_addr;
 		}
 
@@ -556,8 +570,8 @@ extern const std::unordered_map<u32, std::string_view>& get_exported_function_na
 
 	auto& [res, update_time] = *info;
 
-	const auto link = g_fxo->try_get<ppu_linkage_info>();
-	const auto hle_funcs = g_fxo->try_get<ppu_function_manager>();
+	const auto link = fxo::try_get<ppu_linkage_info>();
+	const auto hle_funcs = fxo::try_get<ppu_function_manager>();
 
 	if (!link || !hle_funcs)
 	{
@@ -698,12 +712,12 @@ bool ppu_form_branch_to_code(u32 entry, u32 target);
 
 extern u32 ppu_get_exported_func_addr(u32 fnid, const std::string& module_name)
 {
-	return g_fxo->get<ppu_linkage_info>().modules[module_name].functions[fnid].export_addr;
+	return fxo::get<ppu_linkage_info>().modules[module_name].functions[fnid].export_addr;
 }
 
 extern bool ppu_register_library_lock(std::string_view libname, bool lock_lib)
 {
-	auto link = g_fxo->try_get<ppu_linkage_info>();
+	auto link = fxo::try_get<ppu_linkage_info>();
 
 	if (!link || libname.empty())
 	{
@@ -874,7 +888,7 @@ static auto ppu_load_exports(const ppu_module<lv2_obj>& _module, ppu_linkage_inf
 			// Function linkage info
 			auto& flink = mlink.functions[fnid];
 
-			if (flink.static_func && flink.export_addr == g_fxo->get<ppu_function_manager>().func_addr(flink.static_func->index))
+			if (flink.static_func && flink.export_addr == fxo::get<ppu_function_manager>().func_addr(flink.static_func->index))
 			{
 				flink.export_addr = 0;
 			}
@@ -891,7 +905,7 @@ static auto ppu_load_exports(const ppu_module<lv2_obj>& _module, ppu_linkage_inf
 				if (_sf && (_sf->flags & MFF_FORCED_HLE))
 				{
 					// Inject a branch to the HLE implementation
-					const u32 target = g_fxo->get<ppu_function_manager>().func_addr(_sf->index, true);
+					const u32 target = fxo::get<ppu_function_manager>().func_addr(_sf->index, true);
 
 					// Set exported function
 					flink.export_addr = target - 4;
@@ -1019,7 +1033,7 @@ static import_result_t ppu_load_imports(const ppu_module<lv2_obj>& _module, std:
 			}
 
 			// Link address (special HLE function by default)
-			const u32 link_addr = flink.export_addr ? flink.export_addr : g_fxo->get<ppu_function_manager>().addr;
+			const u32 link_addr = flink.export_addr ? flink.export_addr : fxo::get<ppu_function_manager>().addr;
 
 			// Write import table
 			_module.get_ref<u32>(faddr) = link_addr;
@@ -1067,7 +1081,7 @@ static import_result_t ppu_load_imports(const ppu_module<lv2_obj>& _module, std:
 void ppu_manual_load_imports_exports(u32 imports_start, u32 imports_size, u32 exports_start, u32 exports_size, std::basic_string<char>& loaded_flags)
 {
 	auto& _main = fxo::get<main_ppu_module<lv2_obj>>();
-	auto& link = g_fxo->get<ppu_linkage_info>();
+	auto& link = fxo::get<ppu_linkage_info>();
 
 	ppu_module<lv2_obj> vm_all_fake_module{};
 	vm_all_fake_module.segs.emplace_back(ppu_segment{0x10000, 0 - 0x10000u, 1 /*LOAD*/, 0, 0 - 0x1000u, vm::base(0x10000)});
@@ -1145,11 +1159,11 @@ extern bool is_memory_compatible_for_copy_from_executable_optimization(u32 addr,
 
 void init_ppu_functions(utils::serial* ar, bool full = false)
 {
-	g_fxo->need<ppu_linkage_info>();
+	fxo::need<ppu_linkage_info>();
 
 	if (ar)
 	{
-		const u32 addr = ensure(g_fxo->init<ppu_function_manager>(*ar))->addr;
+		const u32 addr = ensure(fxo::init<ppu_function_manager>(*ar))->addr;
 
 		if (addr % 0x1000 || !vm::check_addr(addr))
 		{
@@ -1157,12 +1171,12 @@ void init_ppu_functions(utils::serial* ar, bool full = false)
 		}
 	}
 	else
-		g_fxo->init<ppu_function_manager>();
+		fxo::init<ppu_function_manager>();
 
 	if (full)
 	{
 		// Initialize HLE modules
-		ppu_initialize_modules(&g_fxo->get<ppu_linkage_info>(), ar);
+		ppu_initialize_modules(&fxo::get<ppu_linkage_info>(), ar);
 	}
 }
 
@@ -1582,7 +1596,7 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 	const auto prx = !ar && !virtual_load ? idm::make_ptr<lv2_obj, lv2_prx>() : make_shared<lv2_prx>();
 
 	// Access linkage information object
-	auto& link = g_fxo->get<ppu_linkage_info>();
+	auto& link = fxo::get<ppu_linkage_info>();
 
 	// Initialize HLE modules
 	ppu_initialize_modules(&link);
@@ -2025,7 +2039,7 @@ void ppu_unload_prx(const lv2_prx& prx)
 		return;
 	}
 
-	std::unique_lock lock(g_fxo->get<ppu_linkage_info>().mutex, std::defer_lock);
+	std::unique_lock lock(fxo::get<ppu_linkage_info>().mutex, std::defer_lock);
 
 	// Clean linkage info
 	for (auto& imp : prx.imports)
@@ -2045,7 +2059,7 @@ void ppu_unload_prx(const lv2_prx& prx)
 	//	auto pinfo = static_cast<ppu_linkage_info::module_data::info*>(exp.second);
 	//	if (pinfo->static_func)
 	//	{
-	//		pinfo->export_addr = g_fxo->get<ppu_function_manager>().func_addr(pinfo->static_func->index);
+	//		pinfo->export_addr = fxo::get<ppu_function_manager>().func_addr(pinfo->static_func->index);
 	//	}
 	//	else if (pinfo->static_var)
 	//	{
@@ -2123,7 +2137,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	auto& _main = fxo::get<main_ppu_module<lv2_obj>>();
 
 	// Access linkage information object
-	auto& link = g_fxo->get<ppu_linkage_info>();
+	auto& link = fxo::get<ppu_linkage_info>();
 
 	// TLS information
 	u32 tls_vaddr = 0;
@@ -2733,6 +2747,9 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	p.stack_size = primary_stacksize;
 	p.entry = vm::_ref<ppu_func_opd_t>(entry);
 
+	ppu_loader.notice("ppu_load_exec: main_thread spawn entry=0x%x p.entry={addr=0x%x rtoc=0x%x} stack=0x%x..0x%x",
+		entry, +p.entry.addr, +p.entry.rtoc, +p.stack_addr, +p.stack_addr + p.stack_size);
+
 	auto ppu = idm::make_ptr<named_thread<ppu_thread>>(p, "main_thread", primary_prio, 1);
 
 	// Write initial data (exitspawn)
@@ -2859,7 +2876,7 @@ std::pair<shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_ob
 	}
 
 	// Access linkage information object
-	auto& link = g_fxo->get<ppu_linkage_info>();
+	auto& link = fxo::get<ppu_linkage_info>();
 
 	// Executable hash
 	sha1_context sha;

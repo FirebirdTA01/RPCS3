@@ -256,6 +256,16 @@ namespace ppu_func_detail
 
 class ppu_function_manager
 {
+public:
+	// Per-process: the addr field below is a guest VM address allocated in
+	// vm::main of whichever process was active at first ppu_initialize. A
+	// global manager would bake pid=1's address into every loaded module's
+	// HLE thunks, which become unmapped guest pages after a process swap.
+	// The host function table (access()) stays static — only the guest
+	// thunk address differs per process.
+	using is_process_local = std::true_type;
+
+private:
 	// Global variable for each registered function
 	template<typename T, T Func>
 	struct registered

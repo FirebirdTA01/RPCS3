@@ -841,7 +841,7 @@ error_code _CellAdecCoreOpOpenExt_lpcm(ppu_thread& ppu, vm::ptr<LpcmDecContext> 
 	handle->cmd_counter = 0;
 
 	const vm::var<char[]> _name = vm::make_str("HLE LPCM decoder");
-	const auto entry = g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(lpcmDecEntry));
+	const auto entry = fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(lpcmDecEntry));
 
 	ret = ppu_execute<&sys_ppu_thread_create>(ppu, handle.ptr(&LpcmDecContext::thread_id), entry, handle.addr(), +res->ppuThreadPriority, +res->ppuThreadStackSize, SYS_PPU_THREAD_CREATE_JOINABLE, +_name);
 	ret = ret ? ret : lv2_syscall<sys_mutex_create>(ppu, handle.ptr(&LpcmDecContext::spurs_queue_pop_mutex), mutex_attr);
@@ -1561,10 +1561,10 @@ error_code adecOpen(ppu_thread& ppu, vm::ptr<CellAdecType> type, vm::cptr<CellAd
 
 	*handle = _this;
 
-	const auto notifyAuDone = vm::ptr<AdecNotifyAuDone>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifyAuDone)));
-	const auto notifyPcmOut = vm::ptr<AdecNotifyPcmOut>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifyPcmOut)));
-	const auto notifyError = vm::ptr<AdecNotifyError>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifyError)));
-	const auto notifySeqDone = vm::ptr<AdecNotifySeqDone>::make(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifySeqDone)));
+	const auto notifyAuDone = vm::ptr<AdecNotifyAuDone>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifyAuDone)));
+	const auto notifyPcmOut = vm::ptr<AdecNotifyPcmOut>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifyPcmOut)));
+	const auto notifyError = vm::ptr<AdecNotifyError>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifyError)));
+	const auto notifySeqDone = vm::ptr<AdecNotifySeqDone>::make(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(adecNotifySeqDone)));
 
 	if (spursRes)
 	{
@@ -2052,18 +2052,18 @@ DECLARE(ppu_module_manager::cellAdec)("cellAdec", []()
 	lpcm_gvar.flags = MFF_HIDDEN;
 	lpcm_gvar.init = []
 	{
-		g_cell_adec_core_ops_lpcm->getMemSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_lpcm)));
-		g_cell_adec_core_ops_lpcm->open.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpen_lpcm)));
-		g_cell_adec_core_ops_lpcm->close.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpClose_lpcm)));
-		g_cell_adec_core_ops_lpcm->startSeq.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpStartSeq_lpcm)));
-		g_cell_adec_core_ops_lpcm->endSeq.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpEndSeq_lpcm)));
-		g_cell_adec_core_ops_lpcm->decodeAu.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpDecodeAu_lpcm)));
-		g_cell_adec_core_ops_lpcm->getVersion.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetVersion_lpcm)));
-		g_cell_adec_core_ops_lpcm->realign.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpRealign_lpcm)));
-		g_cell_adec_core_ops_lpcm->releasePcm.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpReleasePcm_lpcm)));
-		g_cell_adec_core_ops_lpcm->getPcmHandleNum.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetPcmHandleNum_lpcm)));
-		g_cell_adec_core_ops_lpcm->getBsiInfoSize.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetBsiInfoSize_lpcm)));
-		g_cell_adec_core_ops_lpcm->openExt.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpenExt_lpcm)));
+		g_cell_adec_core_ops_lpcm->getMemSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetMemSize_lpcm)));
+		g_cell_adec_core_ops_lpcm->open.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpen_lpcm)));
+		g_cell_adec_core_ops_lpcm->close.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpClose_lpcm)));
+		g_cell_adec_core_ops_lpcm->startSeq.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpStartSeq_lpcm)));
+		g_cell_adec_core_ops_lpcm->endSeq.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpEndSeq_lpcm)));
+		g_cell_adec_core_ops_lpcm->decodeAu.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpDecodeAu_lpcm)));
+		g_cell_adec_core_ops_lpcm->getVersion.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetVersion_lpcm)));
+		g_cell_adec_core_ops_lpcm->realign.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpRealign_lpcm)));
+		g_cell_adec_core_ops_lpcm->releasePcm.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpReleasePcm_lpcm)));
+		g_cell_adec_core_ops_lpcm->getPcmHandleNum.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetPcmHandleNum_lpcm)));
+		g_cell_adec_core_ops_lpcm->getBsiInfoSize.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpGetBsiInfoSize_lpcm)));
+		g_cell_adec_core_ops_lpcm->openExt.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(_CellAdecCoreOpOpenExt_lpcm)));
 	};
 
 	REG_HIDDEN_FUNC(_CellAdecCoreOpGetMemSize_lpcm);

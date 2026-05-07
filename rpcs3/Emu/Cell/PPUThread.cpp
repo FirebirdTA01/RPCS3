@@ -876,6 +876,8 @@ static const bool s_init_return_far_jump_func = []
 
 struct ppu_far_jumps_t
 {
+	using is_process_local = std::true_type;
+
 	struct all_info_t
 	{
 		u32 target;
@@ -919,7 +921,7 @@ struct ppu_far_jumps_t
 					// NOTE: In order to clean up this information all calls must return in order
 					auto& saved_info = calls_info.emplace_back();
 					saved_info.cia = pc;
-					saved_info.saved_lr = std::exchange(ppu->lr, g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(ppu_return_from_far_jump), true));
+					saved_info.saved_lr = std::exchange(ppu->lr, fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(ppu_return_from_far_jump), true));
 					saved_info.saved_r2 = std::exchange(ppu->gpr[2], opd.rtoc);
 				}
 			}
@@ -1073,17 +1075,17 @@ struct ppu_far_jumps_t
 
 u32 ppu_get_far_jump(u32 pc)
 {
-	if (!g_fxo->is_init<ppu_far_jumps_t>())
+	if (!fxo::is_init<ppu_far_jumps_t>())
 	{
 		return 0;
 	}
 
-	return g_fxo->get<ppu_far_jumps_t>().get_target(pc);
+	return fxo::get<ppu_far_jumps_t>().get_target(pc);
 }
 
 static void ppu_far_jump(ppu_thread& ppu, ppu_opcode_t, be_t<u32>* this_op, ppu_intrp_func*)
 {
-	const u32 cia = g_fxo->get<ppu_far_jumps_t>().get_target(vm::get_addr(this_op), &ppu);
+	const u32 cia = fxo::get<ppu_far_jumps_t>().get_target(vm::get_addr(this_op), &ppu);
 
 	if (!vm::check_addr(cia, vm::page_executable))
 	{
@@ -1134,7 +1136,7 @@ bool ppu_form_branch_to_code(u32 entry, u32 target, bool link, bool with_toc, st
 		return false;
 	}
 
-	g_fxo->init<ppu_far_jumps_t>(0);
+	fxo::init<ppu_far_jumps_t>(0);
 
 	if (!module_name.empty())
 	{
@@ -1149,11 +1151,11 @@ bool ppu_form_branch_to_code(u32 entry, u32 target, bool link, bool with_toc, st
 	}
 
 	// Register branch target in host memory, not guest memory
-	auto& jumps = g_fxo->get<ppu_far_jumps_t>();
+	auto& jumps = fxo::get<ppu_far_jumps_t>();
 
 	std::lock_guard lock(jumps.mutex);
 	jumps.add_value(entry, ppu_far_jumps_t::all_info_t{target, link, with_toc, std::move(module_name)});
-	ppu_register_function_at(entry, 4, g_cfg.core.ppu_decoder == ppu_decoder_type::_static ? &ppu_far_jump : ensure(g_fxo->get<ppu_far_jumps_t>().gen_jump<false>(entry)));
+	ppu_register_function_at(entry, 4, g_cfg.core.ppu_decoder == ppu_decoder_type::_static ? &ppu_far_jump : ensure(fxo::get<ppu_far_jumps_t>().gen_jump<false>(entry)));
 
 	return true;
 }
@@ -1175,12 +1177,12 @@ bool ppu_form_branch_to_code(u32 entry, u32 target)
 
 void ppu_remove_hle_instructions(u32 addr, u32 size)
 {
-	if (Emu.IsStopped() || !g_fxo->is_init<ppu_far_jumps_t>())
+	if (Emu.IsStopped() || !fxo::is_init<ppu_far_jumps_t>())
 	{
 		return;
 	}
 
-	auto& jumps = g_fxo->get<ppu_far_jumps_t>();
+	auto& jumps = fxo::get<ppu_far_jumps_t>();
 
 	std::lock_guard lock(jumps.mutex);
 
@@ -1241,7 +1243,7 @@ extern bool ppu_breakpoint(u32 addr, bool is_adding)
 	ppu_intrp_func_t func_original = 0;
 	ppu_intrp_func_t breakpoint = &ppu_break;
 
-	if (u32 hle_addr{}; g_fxo->is_init<ppu_function_manager>() && (hle_addr = g_fxo->get<ppu_function_manager>().addr))
+	if (u32 hle_addr{}; fxo::is_init<ppu_function_manager>() && (hle_addr = fxo::get<ppu_function_manager>().addr))
 	{
 		// HLE function index
 		const u32 index = (addr - hle_addr) / 8;
@@ -1327,7 +1329,7 @@ std::array<u32, 2> op_branch_targets(u32 pc, ppu_opcode_t op)
 {
 	std::array<u32, 2> res{pc + 4, umax};
 
-	if (u32 target = g_fxo->is_init<ppu_far_jumps_t>() ? g_fxo->get<ppu_far_jumps_t>().get_target(pc) : 0)
+	if (u32 target = fxo::is_init<ppu_far_jumps_t>() ? fxo::get<ppu_far_jumps_t>().get_target(pc) : 0)
 	{
 		res[0] = target;
 		return res;
@@ -1698,7 +1700,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 			}
 
 			// Ignore HLE stop address
-			return addr == g_fxo->get<ppu_function_manager>().func_addr(1, true);
+			return addr == fxo::get<ppu_function_manager>().func_addr(1, true);
 		};
 
 		if (is_first && !is_invalid(_lr))
@@ -2489,7 +2491,7 @@ bool ppu_thread::savable() const
 		return false;
 	}
 
-	if (cia == g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(vdecEntry)))
+	if (cia == fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(vdecEntry)))
 	{
 		// Do not attempt to save the state of HLE VDEC threads
 		return false;
@@ -2865,7 +2867,7 @@ void ppu_thread::fast_call(u32 addr, u64 rtoc, bool is_thread_entry)
 	interrupt_thread_executing = true;
 	cia = addr;
 	gpr[2] = rtoc;
-	lr = g_fxo->get<ppu_function_manager>().func_addr(1, true); // HLE stop address
+	lr = fxo::get<ppu_function_manager>().func_addr(1, true); // HLE stop address
 	current_function = nullptr;
 
 	if (std::exchange(loaded_from_savestate, false))
@@ -2892,7 +2894,7 @@ void ppu_thread::fast_call(u32 addr, u64 rtoc, bool is_thread_entry)
 
 		const auto cia = _this->cia;
 
-		if (_this->current_function && g_fxo->get<ppu_function_manager>().is_func(cia))
+		if (_this->current_function && fxo::get<ppu_function_manager>().is_func(cia))
 		{
 			return fmt::format("PPU[0x%x] Thread (%s) [HLE:0x%08x, LR:0x%08x]", _this->id, *name_cache.get(), cia, _this->lr);
 		}
@@ -2920,7 +2922,7 @@ void ppu_thread::fast_call(u32 addr, u64 rtoc, bool is_thread_entry)
 			gpr[2] = old_rtoc;
 			lr = old_lr;
 		}
-		else if (state & cpu_flag::ret && cia == g_fxo->get<ppu_function_manager>().func_addr(1, true) + 4 && is_thread_entry)
+		else if (state & cpu_flag::ret && cia == fxo::get<ppu_function_manager>().func_addr(1, true) + 4 && is_thread_entry)
 		{
 			std::string ret;
 			dump_all(ret);
@@ -4522,7 +4524,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 					continue;
 				}
 
-				if (g_fxo->is_init<ppu_far_jumps_t>() && !g_fxo->get<ppu_far_jumps_t>().get_targets(block.first, block.second).empty())
+				if (fxo::is_init<ppu_far_jumps_t>() && !fxo::get<ppu_far_jumps_t>().get_targets(block.first, block.second).empty())
 				{
 					// Replace the block with ppu_far_jump
 					continue;
@@ -4949,13 +4951,13 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				}
 			}
 
-			if (g_fxo->is_init<ppu_far_jumps_t>())
+			if (fxo::is_init<ppu_far_jumps_t>())
 			{
-				auto targets = g_fxo->get<ppu_far_jumps_t>().get_targets(func.addr, func.size);
+				auto targets = fxo::get<ppu_far_jumps_t>().get_targets(func.addr, func.size);
 
 				for (auto [source, target] : targets)
 				{
-					auto far_jump = ensure(g_fxo->get<ppu_far_jumps_t>().gen_jump(source));
+					auto far_jump = ensure(fxo::get<ppu_far_jumps_t>().gen_jump(source));
 
 					if (source == func.addr)
 					{
@@ -5104,7 +5106,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 						continue;
 					}
 
-					if (g_fxo->is_init<ppu_far_jumps_t>() && !g_fxo->get<ppu_far_jumps_t>().get_targets(func.addr, func.size).empty())
+					if (fxo::is_init<ppu_far_jumps_t>() && !fxo::get<ppu_far_jumps_t>().get_targets(func.addr, func.size).empty())
 					{
 						// Filter out functions with patches
 						part.excluded_funcs.emplace_back(func.addr);

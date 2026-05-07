@@ -348,7 +348,7 @@ error_code open_exit_dialog(const std::string& message, bool is_exit_requested, 
 
 	if (is_exit_requested)
 	{
-		callback.set(g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(exit_game)));
+		callback.set(fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(exit_game)));
 	}
 
 	const error_code res = open_msg_dialog

@@ -6805,7 +6805,7 @@ auto UNK()
 			ppu.exec_bytes += ppu.cia - old_cia;
 
 			// HLE function index
-			const u32 index = (ppu.cia - g_fxo->get<ppu_function_manager>().addr) / 8;
+			const u32 index = (ppu.cia - fxo::get<ppu_function_manager>().addr) / 8;
 
 			const auto& hle_funcs = ppu_function_manager::get();
 
