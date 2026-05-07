@@ -543,7 +543,7 @@ error_code sys_spu_image_open(ppu_thread& ppu, vm::ptr<sys_spu_image> img, vm::c
 		return {fs_error, path};
 	}
 
-	u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
+	u128 klic = fxo::get<loaded_npdrm_keys>().last_key();
 
 	const fs::file elf_file = decrypt_self(file, reinterpret_cast<const u8*>(&klic));
 
@@ -581,7 +581,7 @@ error_code sys_spu_image_open_by_fd(ppu_thread& ppu, vm::ptr<sys_spu_image> img,
 		return CELL_EBADF;
 	}
 
-	u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
+	u128 klic = fxo::get<loaded_npdrm_keys>().last_key();
 
 	const fs::file elf_file = decrypt_self(lv2_file::make_view(file, offset), reinterpret_cast<const u8*>(&klic));
 
@@ -1085,7 +1085,7 @@ error_code sys_spu_thread_group_create(ppu_thread& ppu, vm::ptr<u32> id, u32 num
 	}
 	else
 	{
-		ct = &g_fxo->get<lv2_memory_container>();
+		ct = &fxo::get<lv2_memory_container>();
 
 		if (ct->take(mem_size) != mem_size)
 		{

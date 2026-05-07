@@ -882,7 +882,7 @@ std::function<cpu_thread*()> debugger_frame::make_check_cpu(cpu_thread* cpu, boo
 
 	shared_ptr<cpu_thread> shared;
 
-	if (g_fxo->is_init<id_manager::id_map<named_thread<ppu_thread>>>() && g_fxo->is_init<id_manager::id_map<named_thread<spu_thread>>>())
+	if (fxo::is_init<id_manager::id_map<named_thread<ppu_thread>>>() && fxo::is_init<id_manager::id_map<named_thread<spu_thread>>>())
 	{
 		if (unlocked)
 		{
@@ -1094,7 +1094,7 @@ void debugger_frame::UpdateUnitList()
 
 	if (emu_state != system_state::stopped)
 	{
-		if (g_fxo->is_init<id_manager::id_map<named_thread<ppu_thread>>>())
+		if (fxo::is_init<id_manager::id_map<named_thread<ppu_thread>>>())
 		{
 			idm::select<named_thread<ppu_thread>>(on_select, idm::unlocked);
 		}
@@ -1133,7 +1133,7 @@ void debugger_frame::UpdateUnitList()
 			cpu_list.emplace_back(tr("HwPPU[%0]: Hardware PPU Thread #%1").arg(i + 1).arg(i + 1), std::move(get_ppu_at));
 		}
 
-		if (g_fxo->is_init<id_manager::id_map<named_thread<spu_thread>>>())
+		if (fxo::is_init<id_manager::id_map<named_thread<spu_thread>>>())
 		{
 			idm::select<named_thread<spu_thread>>(on_select, idm::unlocked);
 		}

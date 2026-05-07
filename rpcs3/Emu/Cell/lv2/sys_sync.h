@@ -363,7 +363,7 @@ public:
 				return finalize_construct();
 			}
 
-			auto& ipc_container = g_fxo->get<ipc_manager<T, u64>>();
+			auto& ipc_container = fxo::get<ipc_manager<T, u64>>();
 
 			if (flags == SYS_SYNC_NOT_CREATE)
 			{
@@ -418,7 +418,7 @@ public:
 
 		if (obj.exists-- == 1u && pshared)
 		{
-			g_fxo->get<ipc_manager<T, u64>>().remove(ipc_key);
+			fxo::get<ipc_manager<T, u64>>().remove(ipc_key);
 		}
 	}
 
@@ -427,9 +427,9 @@ public:
 	{
 		if (pshared == umax ? ipc_key != 0 : pshared != 0)
 		{
-			g_fxo->need<ipc_manager<T, u64>>();
+			fxo::need<ipc_manager<T, u64>>();
 
-			g_fxo->get<ipc_manager<T, u64>>().add(ipc_key, [&]()
+			fxo::get<ipc_manager<T, u64>>().add(ipc_key, [&]()
 			{
 				return make;
 			});

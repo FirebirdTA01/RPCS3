@@ -113,6 +113,7 @@ lv2_rsxaudio::lv2_rsxaudio(utils::serial& ar) noexcept
 	if (init)
 	{
 		ar(shmem);
+		m_host_shared_page = Emu.current_process().vm_handle().sudo_addr + u32{shmem};
 
 		for (auto& port : event_queue)
 		{
@@ -174,6 +175,10 @@ error_code sys_rsxaudio_initialize(vm::ptr<u32> handle)
 		rsxaudio_thread.rsxaudio_ctx_allocated = false;
 		return CELL_ENOMEM;
 	}
+
+	// Pin the host pointer to the calling (= owning) process's sudo mirror so
+	// later reads from the audio data thread survive set_active_process swaps.
+	rsxaudio_obj->m_host_shared_page = Emu.current_process().vm_handle().sudo_addr + u32{rsxaudio_obj->shmem};
 
 	rsxaudio_obj->page_lock();
 

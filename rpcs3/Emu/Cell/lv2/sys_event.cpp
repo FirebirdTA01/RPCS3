@@ -114,7 +114,7 @@ shared_ptr<lv2_event_queue> lv2_event_queue::find(u64 ipc_key)
 		return {};
 	}
 
-	return g_fxo->get<ipc_manager<lv2_event_queue, u64>>().get(ipc_key);
+	return fxo::get<ipc_manager<lv2_event_queue, u64>>().get(ipc_key);
 }
 
 extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<shared_ptr<named_thread<spu_thread>>, 8>& notify_spus);

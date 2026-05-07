@@ -34,9 +34,7 @@ static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vp
 		src = std::move(lv2_file);
 	}
 
-	u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
-
-	src = decrypt_self(std::move(src), reinterpret_cast<u8*>(&klic));
+	u128 klic = fxo::get<loaded_npdrm_keys>().last_key();
 
 	if (!src)
 	{
@@ -92,7 +90,7 @@ std::function<void(void*)> lv2_overlay::load(utils::serial& ar)
 
 	if (file)
 	{
-		u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
+		u128 klic = fxo::get<loaded_npdrm_keys>().last_key();
 		file = make_file_view(std::move(file), offset, umax);
 		ovlm = ppu_load_overlay(ppu_exec_object{ decrypt_self(std::move(file), reinterpret_cast<u8*>(&klic)) }, false, path, 0, &ar).first;
 

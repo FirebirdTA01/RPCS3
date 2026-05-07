@@ -433,7 +433,7 @@ bool cheat_engine::is_addr_safe(const u32 offset)
 	if (Emu.IsStopped())
 		return false;
 
-	const auto ppum = g_fxo->try_get<main_ppu_module<lv2_obj>>();
+	const auto ppum = fxo::try_get<main_ppu_module<lv2_obj>>();
 
 	if (!ppum)
 	{

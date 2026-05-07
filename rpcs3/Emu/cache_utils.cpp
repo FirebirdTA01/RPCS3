@@ -13,7 +13,7 @@ namespace rpcs3::cache
 {
 	std::string get_ppu_cache()
 	{
-		const auto _main = g_fxo->try_get<main_ppu_module<lv2_obj>>();
+		const auto _main = fxo::try_get<main_ppu_module<lv2_obj>>();
 
 		if (!_main || _main->cache.empty())
 		{

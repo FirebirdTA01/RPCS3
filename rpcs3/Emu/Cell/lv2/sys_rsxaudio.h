@@ -161,6 +161,10 @@ struct lv2_rsxaudio final : lv2_obj
 
 	vm::addr_t shmem{};
 
+	// Host pointer to the owner process's sudo mirror at offset shmem.
+	// Cached at shmem allocation so reads survive set_active_process pointer swaps.
+	u8* m_host_shared_page = nullptr;
+
 	std::array<shared_ptr<lv2_event_queue>, SYS_RSXAUDIO_PORT_CNT> event_queue{};
 
 	// lv2 uses port memory addresses for their names
@@ -181,7 +185,7 @@ struct lv2_rsxaudio final : lv2_obj
 
 	rsxaudio_shmem* get_rw_shared_page() const
 	{
-		return reinterpret_cast<rsxaudio_shmem*>(vm::g_sudo_addr + u32{shmem});
+		return reinterpret_cast<rsxaudio_shmem*>(m_host_shared_page);
 	}
 };
 

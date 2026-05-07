@@ -2005,7 +2005,7 @@ error_code DmuxPamfContext::open(ppu_thread& ppu, const CellDmuxPamfResource& re
 
 	_this->use_existing_spurs = !!res_spurs;
 
-	if (!res_spurs && g_fxo->get<lv2_memory_container>().take(0x40000) != 0x40000)
+	if (!res_spurs && fxo::get<lv2_memory_container>().take(0x40000) != 0x40000)
 	{
 		return CELL_DMUX_PAMF_ERROR_FATAL;
 	}
@@ -2093,7 +2093,7 @@ error_code DmuxPamfContext::close(ppu_thread& ppu)
 
 	if (!use_existing_spurs)
 	{
-		g_fxo->get<lv2_memory_container>().free(0x40000);
+		fxo::get<lv2_memory_container>().free(0x40000);
 	}
 
 	if (lv2_syscall<sys_cond_destroy>(ppu, cond) != CELL_OK

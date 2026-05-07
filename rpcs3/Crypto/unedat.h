@@ -13,6 +13,11 @@ constexpr u32 EDAT_DEBUG_DATA_FLAG = 0x80000000;
 
 struct loaded_npdrm_keys
 {
+	// Stays GLOBAL: emulator-wide key cache, not per-PS3-process state. Multiple processes
+	// share the same key ring (same as ipc_manager being host-side cross-process).
+	// Per deepseek's bifurcation analysis: a marker here splits install (one fxo) from
+	// lookup (another fxo) when call sites use direct g_fxo-> vs fxo:: respectively.
+
 	atomic_t<u128> dec_keys[16]{};
 	atomic_t<u64> dec_keys_pos = 0;
 	u128 one_time_key{}; // For savestates

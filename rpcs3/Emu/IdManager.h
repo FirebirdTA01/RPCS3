@@ -6,21 +6,153 @@
 #include <memory>
 #include <vector>
 #include <span>
+#include <atomic>
+#include <array>
+#include <string_view>
 
 #include "util/serialization.hpp"
 #include "util/shared_ptr.hpp"
 #include "util/fixed_typemap.hpp"
 #include "Emu/System.h"
 
+// Forward declarations for trait propagation.
+template <typename T, typename K> class ipc_manager;
+template <class Context> class named_thread;
+
 namespace id_manager
 {
-	template <typename T>
+	template <typename T> struct id_map;
+
+	// Default: a type is process-local iff it declares `using is_process_local = std::true_type;`
+	// as a member typedef. The default below picks up types without the marker.
+	template <typename T, typename = void>
 	struct is_process_local : std::false_type {};
+
+	template <typename T>
+	struct is_process_local<T, std::void_t<typename T::is_process_local>>
+		: T::is_process_local {};
+
+	// Propagation: wrapper types inherit T's classification so id_map<lv2_X> etc. dispatch
+	// correctly without per-instantiation maintenance.
+	template <typename T>
+	struct is_process_local<id_map<T>, void> : is_process_local<T> {};
+
+	// ipc_manager<T,K> intentionally does NOT propagate — it is a host-side
+	// cross-process IPC routing table (maps (process, ipc_key) to (process,
+	// LV2 object)) and must be visible to every process that connects to
+	// it. Same architectural class as loaded_npdrm_keys. Stays GLOBAL.
+
+	template <typename T>
+	struct is_process_local<named_thread<T>, void> : is_process_local<T> {};
 }
 
 extern stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
 
 constexpr auto* g_fxo = &g_fixed_typemap;
+
+// Diagnostic instrumentation: log first-time fxo / idm dispatch per (thread,
+// type, target). The bitmap caps at 8192 unique types per thread (~1 KB each).
+// Defined in IdManager.cpp.
+namespace id_manager
+{
+	extern std::atomic<u32> g_dispatch_index_counter;
+
+	void log_dispatch_first_seen(std::string_view name, bool to_local_fxo, const char* origin);
+
+	template <typename T>
+	inline u32 dispatch_index_for() noexcept
+	{
+		static const u32 idx = g_dispatch_index_counter.fetch_add(1, std::memory_order_relaxed);
+		return idx;
+	}
+
+	// Extract a printable type name from __PRETTY_FUNCTION__ without RTTI.
+	// Cannot be constexpr on GCC where __PRETTY_FUNCTION__ is not a constant expression.
+	template <typename T>
+	inline std::string_view dispatch_type_name() noexcept
+	{
+#if defined(__clang__) || defined(__GNUC__)
+		const std::string_view p = __PRETTY_FUNCTION__;
+		const std::string_view marker = "T = ";
+		const auto begin = p.find(marker);
+		if (begin == std::string_view::npos)
+		{
+			return p;
+		}
+		const auto start = begin + marker.size();
+		const auto semi = p.find(';', start);
+		const auto rsq = p.find(']', start);
+		const auto end = (semi != std::string_view::npos && semi < rsq) ? semi : rsq;
+		return p.substr(start, end - start);
+#else
+		return "?";
+#endif
+	}
+
+	inline constexpr usz DISPATCH_BITMAP_BITS = 8192;
+
+	template <typename T>
+	inline void trace_dispatch(bool to_local_fxo, const char* origin) noexcept
+	{
+		thread_local std::array<u64, DISPATCH_BITMAP_BITS / 64> seen_local{};
+		thread_local std::array<u64, DISPATCH_BITMAP_BITS / 64> seen_global{};
+
+		const u32 idx = dispatch_index_for<T>();
+		if (idx >= DISPATCH_BITMAP_BITS) [[unlikely]]
+		{
+			return;
+		}
+
+		auto& seen = to_local_fxo ? seen_local : seen_global;
+		const u64 mask = 1ULL << (idx & 63);
+		if (seen[idx >> 6] & mask)
+		{
+			return;
+		}
+
+		seen[idx >> 6] |= mask;
+		log_dispatch_first_seen(dispatch_type_name<T>(), to_local_fxo, origin);
+	}
+}
+
+// Compile-time-dispatched fxo accessor. Process-local types route to the
+// active process's local_fxo (per-process storage). Global types fall through
+// to g_fxo. Mirrors the dispatch shape used by idm::access_typemap below.
+namespace fxo
+{
+	template <typename T>
+	static auto& access()
+	{
+		constexpr bool to_local = id_manager::is_process_local<T>::value;
+		id_manager::trace_dispatch<T>(to_local, "fxo");
+
+		if constexpr (to_local)
+			return Emu.current_process().local_fxo();
+		else
+			return *g_fxo;
+	}
+
+	template <typename T, typename... Args>
+	static T* init(Args&&... args)
+	{
+		return access<T>().template init<T>(std::forward<Args>(args)...);
+	}
+
+	template <typename T>
+	static T& get() { return access<T>().template get<T>(); }
+
+	template <typename T>
+	static T* try_get() { return access<T>().template try_get<T>(); }
+
+	template <typename T>
+	static bool is_init() { return access<T>().template is_init<T>(); }
+
+	template <typename T, typename... Args>
+	static void need(Args&&... args)
+	{
+		access<T>().template need<T>(std::forward<Args>(args)...);
+	}
+}
 
 enum class thread_state : u32;
 
@@ -416,7 +548,10 @@ class idm
 	template <typename T>
 	static auto& access_typemap()
 	{
-		if constexpr (id_manager::is_process_local<T>::value)
+		constexpr bool to_local = id_manager::is_process_local<T>::value;
+		id_manager::trace_dispatch<T>(to_local, "idm");
+
+		if constexpr (to_local)
 			return Emu.current_process().local_fxo();
 		else
 			return *g_fxo;

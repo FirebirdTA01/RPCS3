@@ -1,11 +1,25 @@
 #include "stdafx.h"
 #include "IdManager.h"
+#include "Utilities/Thread.h"
+
+LOG_CHANNEL(fxo_trace, "FXOTRACE");
 
 shared_mutex id_manager::g_mutex;
 
 namespace id_manager
 {
 	thread_local u32 g_id = 0;
+
+	std::atomic<u32> g_dispatch_index_counter{0};
+
+	void log_dispatch_first_seen(std::string_view name, bool to_local_fxo, const char* origin)
+	{
+		fxo_trace.error("first_seen origin=%s target=%s caller=%s type=%s",
+			origin,
+			to_local_fxo ? "local_fxo" : "g_fxo",
+			thread_ctrl::get_name(),
+			std::string(name).c_str());
+	}
 }
 
 template <>

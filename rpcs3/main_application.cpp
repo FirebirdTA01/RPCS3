@@ -124,12 +124,19 @@ EmuCallbacks main_application::CreateCallbacks()
 		{
 		case keyboard_handler::null:
 		{
-			ensure(g_fxo->init<KeyboardHandlerBase, NullKeyboardHandler>(Emu.DeserialManager()));
+			// Under co-resident load the host-side handler may already be inited
+			// from the previous process (g_fxo is shared across processes for
+			// host-side state). init returns null in that case; reuse the
+			// existing instance via try_get.
+			KeyboardHandlerBase* h = g_fxo->init<KeyboardHandlerBase, NullKeyboardHandler>(Emu.DeserialManager());
+			if (!h) h = g_fxo->try_get<KeyboardHandlerBase>();
+			ensure(h);
 			break;
 		}
 		case keyboard_handler::basic:
 		{
 			basic_keyboard_handler* ret = g_fxo->init<KeyboardHandlerBase, basic_keyboard_handler>(Emu.DeserialManager());
+			if (!ret) ret = static_cast<basic_keyboard_handler*>(g_fxo->try_get<KeyboardHandlerBase>());
 			ensure(ret);
 			ret->moveToThread(get_thread());
 			ret->SetTargetWindow(reinterpret_cast<QWindow*>(m_game_window));
@@ -161,12 +168,16 @@ EmuCallbacks main_application::CreateCallbacks()
 		{
 		case mouse_handler::null:
 		{
-			ensure(g_fxo->init<MouseHandlerBase, NullMouseHandler>(Emu.DeserialManager()));
+			// Co-resident reuse — same rationale as init_kb_handler above.
+			MouseHandlerBase* h = g_fxo->init<MouseHandlerBase, NullMouseHandler>(Emu.DeserialManager());
+			if (!h) h = g_fxo->try_get<MouseHandlerBase>();
+			ensure(h);
 			break;
 		}
 		case mouse_handler::basic:
 		{
 			basic_mouse_handler* ret = g_fxo->init<MouseHandlerBase, basic_mouse_handler>(Emu.DeserialManager());
+			if (!ret) ret = static_cast<basic_mouse_handler*>(g_fxo->try_get<MouseHandlerBase>());
 			ensure(ret);
 			ret->moveToThread(get_thread());
 			ret->SetTargetWindow(reinterpret_cast<QWindow*>(m_game_window));
@@ -174,7 +185,9 @@ EmuCallbacks main_application::CreateCallbacks()
 		}
 		case mouse_handler::raw:
 		{
-			ensure(g_fxo->init<MouseHandlerBase, raw_mouse_handler>(Emu.DeserialManager()));
+			MouseHandlerBase* h = g_fxo->init<MouseHandlerBase, raw_mouse_handler>(Emu.DeserialManager());
+			if (!h) h = g_fxo->try_get<MouseHandlerBase>();
+			ensure(h);
 			break;
 		}
 		}
@@ -182,7 +195,9 @@ EmuCallbacks main_application::CreateCallbacks()
 
 	callbacks.init_pad_handler = [this](std::string_view title_id)
 	{
-		ensure(g_fxo->init<named_thread<pad_thread>>(get_thread(), m_game_window, title_id));
+		auto* h = g_fxo->init<named_thread<pad_thread>>(get_thread(), m_game_window, title_id);
+		if (!h) h = g_fxo->try_get<named_thread<pad_thread>>();
+		ensure(h);
 
 		qt_events_aware_op(0, [](){ return !!pad::g_started; });
 	};

@@ -1066,7 +1066,7 @@ static import_result_t ppu_load_imports(const ppu_module<lv2_obj>& _module, std:
 // For _sys_prx_register_module
 void ppu_manual_load_imports_exports(u32 imports_start, u32 imports_size, u32 exports_start, u32 exports_size, std::basic_string<char>& loaded_flags)
 {
-	auto& _main = g_fxo->get<main_ppu_module<lv2_obj>>();
+	auto& _main = fxo::get<main_ppu_module<lv2_obj>>();
 	auto& link = g_fxo->get<ppu_linkage_info>();
 
 	ppu_module<lv2_obj> vm_all_fake_module{};
@@ -1175,7 +1175,7 @@ static void ppu_check_patch_spu_images(const ppu_module<lv2_obj>& mod, const ppu
 
 	const bool is_firmware = mod.path.starts_with(vfs::get("/dev_flash/"));
 
-	const auto _main = g_fxo->try_get<main_ppu_module<lv2_obj>>();
+	const auto _main = fxo::try_get<main_ppu_module<lv2_obj>>();
 
 	const std::string_view seg_view{ensure(mod.get_ptr<char>(seg.addr)), seg.size};
 
@@ -1483,7 +1483,7 @@ static void ppu_check_patch_spu_images(const ppu_module<lv2_obj>& mod, const ppu
 void try_spawn_ppu_if_exclusive_program(const ppu_module<lv2_obj>& m)
 {
 	// If only PRX/OVL has been loaded at Emu.BootGame(), launch a single PPU thread so its memory can be viewed
-	if (Emu.IsReady() && g_fxo->get<main_ppu_module<lv2_obj>>().segs.empty() && !Emu.DeserialManager())
+	if (Emu.IsReady() && fxo::get<main_ppu_module<lv2_obj>>().segs.empty() && !Emu.DeserialManager())
 	{
 		ppu_thread_params p
 		{
@@ -1496,7 +1496,7 @@ void try_spawn_ppu_if_exclusive_program(const ppu_module<lv2_obj>& m)
 		ppu->cia = m.funcs.empty() ? m.secs[0].addr : m.funcs[0].addr;
 
 		// For kernel explorer
-		g_fxo->init<lv2_memory_container>(4096);
+		fxo::init<lv2_memory_container>(4096);
 	}
 }
 
@@ -2120,7 +2120,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	init_ppu_functions(ar, false);
 
 	// Set for delayed initialization in ppu_initialize()
-	auto& _main = g_fxo->get<main_ppu_module<lv2_obj>>();
+	auto& _main = fxo::get<main_ppu_module<lv2_obj>>();
 
 	// Access linkage information object
 	auto& link = g_fxo->get<ppu_linkage_info>();
@@ -2628,13 +2628,13 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 			const auto callback = std::move(Emu.current_process().RefInitMemContainers());
 			callback(mem_size);
 
-			ensure(g_fxo->is_init<id_manager::id_map<lv2_memory_container>>());
-			ensure(g_fxo->is_init<lv2_memory_container>());
+			ensure(fxo::is_init<id_manager::id_map<lv2_memory_container>>());
+			ensure(fxo::is_init<lv2_memory_container>());
 		}
 		else if (!ar)
 		{
-			ensure(g_fxo->init<id_manager::id_map<lv2_memory_container>>());
-			ensure(g_fxo->init<lv2_memory_container>(mem_size));
+			ensure(fxo::init<id_manager::id_map<lv2_memory_container>>());
+			ensure(fxo::init<lv2_memory_container>(mem_size));
 		}
 
 		void init_fxo_for_exec(utils::serial* ar, bool full);
@@ -2795,7 +2795,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 
 	ppu->gpr[1] -= stack_alloc_size;
 
-	ensure(g_fxo->get<lv2_memory_container>().take(primary_stacksize + segs_size));
+	ensure(fxo::get<lv2_memory_container>().take(primary_stacksize + segs_size));
 
 	ppu->cmd_push({ppu_cmd::initialize, 0});
 

@@ -268,6 +268,8 @@ struct ppu_module : public Type
 template <typename T>
 struct main_ppu_module : public ppu_module<T>
 {
+	using is_process_local = std::true_type;
+
 	u32 elf_entry{};
 	u32 seg0_code_end{};
 

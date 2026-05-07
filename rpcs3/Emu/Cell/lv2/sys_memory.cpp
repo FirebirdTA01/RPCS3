@@ -61,7 +61,7 @@ lv2_memory_container* lv2_memory_container::search(u32 id)
 		return idm::check_unlocked<lv2_memory_container>(id);
 	}
 
-	return &g_fxo->get<lv2_memory_container>();
+	return &fxo::get<lv2_memory_container>();
 }
 
 struct sys_memory_address_table
@@ -136,7 +136,7 @@ error_code sys_memory_allocate(cpu_thread& cpu, u64 size, u64 flags, vm::ptr<u32
 	}
 
 	// Get "default" memory container
-	auto& dct = g_fxo->get<lv2_memory_container>();
+	auto& dct = fxo::get<lv2_memory_container>();
 
 	// Try to get "physical memory"
 	if (!dct.take(size))
@@ -326,7 +326,7 @@ error_code sys_memory_get_user_memory_size(cpu_thread& cpu, vm::ptr<sys_memory_i
 	cpu.state += cpu_flag::wait;
 
 	// Get "default" memory container
-	auto& dct = g_fxo->get<lv2_memory_container>();
+	auto& dct = fxo::get<lv2_memory_container>();
 
 	sys_memory_info_t out{};
 	{
@@ -386,7 +386,7 @@ error_code sys_memory_container_create(cpu_thread& cpu, vm::ptr<u32> cid, u64 si
 		return CELL_ENOMEM;
 	}
 
-	auto& dct = g_fxo->get<lv2_memory_container>();
+	auto& dct = fxo::get<lv2_memory_container>();
 
 	std::lock_guard lock(s_memstats_mtx);
 
@@ -438,7 +438,7 @@ error_code sys_memory_container_destroy(cpu_thread& cpu, u32 cid)
 	}
 
 	// Return "physical memory" to the default container
-	g_fxo->get<lv2_memory_container>().free(ct->size);
+	fxo::get<lv2_memory_container>().free(ct->size);
 
 	return CELL_OK;
 }
@@ -465,6 +465,8 @@ error_code sys_memory_container_get_size(cpu_thread& cpu, vm::ptr<sys_memory_inf
 
 error_code sys_memory_container_destroy_parent_with_childs(cpu_thread& cpu, u32 cid, u32 must_0, vm::ptr<u32> mc_child)
 {
+	cpu.state += cpu_flag::wait;
+
 	sys_memory.warning("sys_memory_container_destroy_parent_with_childs(cid=0x%x, must_0=%d, mc_child=*0x%x)", cid, must_0, mc_child);
 
 	if (must_0)
@@ -472,7 +474,63 @@ error_code sys_memory_container_destroy_parent_with_childs(cpu_thread& cpu, u32 
 		return CELL_EINVAL;
 	}
 
-	// Multi-process is not supported yet so child containers mean nothing at the moment
-	// Simply destroy parent
+	// Real-PS3 semantics: this syscall force-destroys the container regardless of
+	// usage count, because the calling process is committed to exiting (or, in our
+	// co-resident model, has explicitly relinquished this container's memory). Walk
+	// the per-page address table to release every direct allocation tagged to this
+	// container, then force-zero any leftover used count from allocations that
+	// bypass container accounting (e.g. PRX segments via vm::alloc(vm::main)),
+	// then delegate to the standard destroy to withdraw from idm and return the
+	// container's size to the default container.
+	{
+		const auto ct = idm::get_unlocked<lv2_memory_container>(cid);
+
+		if (!ct)
+		{
+			return CELL_ESRCH;
+		}
+
+		std::lock_guard lock(s_memstats_mtx);
+
+		auto& addr_table = g_fxo->get<sys_memory_address_table>();
+		const auto* ct_raw = ct.get();
+
+		constexpr u32 addr_table_count = static_cast<u32>(sizeof(addr_table.addrs) / sizeof(addr_table.addrs[0]));
+
+		for (u32 i = 0; i < addr_table_count; i++)
+		{
+			if (addr_table.addrs[i].load() != ct_raw)
+			{
+				continue;
+			}
+
+			if (addr_table.addrs[i].exchange(nullptr) != ct_raw)
+			{
+				continue;
+			}
+
+			const u32 addr = i << 16;
+			const u32 size = vm::dealloc(addr);
+
+			if (size != umax)
+			{
+				ct->free(size);
+			}
+		}
+
+		if (const u32 leftover = ct->used.exchange(0))
+		{
+			sys_memory.warning("sys_memory_container_destroy_parent_with_childs(cid=0x%x): %u bytes untracked in container, force-released", cid, leftover);
+		}
+	}
+
+	// TODO: walk idm for child containers when nested-container support exists.
+	// Currently no syscall creates sub-containers, so child count is always zero.
+	if (mc_child)
+	{
+		cpu.check_state();
+		*mc_child = 0;
+	}
+
 	return sys_memory_container_destroy(cpu, cid);
 }

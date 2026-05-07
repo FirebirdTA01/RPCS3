@@ -655,7 +655,7 @@ error_code npDrmIsAvailable(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_pat
 
 	sceNp.warning("npDrmIsAvailable(): drm_path=\"%s\"", enc_drm_path);
 
-	auto& npdrmkeys = g_fxo->get<loaded_npdrm_keys>();
+	auto& npdrmkeys = fxo::get<loaded_npdrm_keys>();
 
 	const auto [fs_error, ppath, real_path, enc_file, type] = lv2_file::open(enc_drm_path, 0, 0);
 

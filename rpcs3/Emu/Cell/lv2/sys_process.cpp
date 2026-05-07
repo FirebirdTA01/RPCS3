@@ -458,7 +458,7 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 		std::string path = vfs::get(argv[0]);
 		std::string hdd1 = vfs::get("/dev_hdd1/");
 
-		const u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
+		const u128 klic = fxo::get<loaded_npdrm_keys>().last_key();
 
 		// Non-destructive VSH→game launch: create a second process and switch to it
 		if (is_from_vsh && !is_real_reboot)
@@ -511,23 +511,23 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 		if (!is_real_reboot)
 		{
 			reader_lock rlock{id_manager::g_mutex};
-			g_fxo->get<id_map<lv2_memory_container>>().save(*idm_capture);
+			fxo::get<id_map<lv2_memory_container>>().save(*idm_capture);
 			stx::serial_breathe_and_tag(*idm_capture, "id_map<lv2_memory_container>", false);
 		}
 
 		idm_capture->set_reading_state();
 
-		auto func = [is_real_reboot, old_size = g_fxo->get<lv2_memory_container>().size, idm_capture](u32 sdk_suggested_mem) mutable
+		auto func = [is_real_reboot, old_size = fxo::get<lv2_memory_container>().size, idm_capture](u32 sdk_suggested_mem) mutable
 		{
 			if (is_real_reboot)
 			{
 				// Do not save containers on actual reboot
-				ensure(g_fxo->init<id_map<lv2_memory_container>>());
+				ensure(fxo::init<id_map<lv2_memory_container>>());
 			}
 			else
 			{
 				// Save LV2 memory containers
-				ensure(g_fxo->init<id_map<lv2_memory_container>>(*idm_capture));
+				ensure(fxo::init<id_map<lv2_memory_container>>(*idm_capture));
 			}
 
 			// Empty the containers, accumulate their total size
@@ -542,7 +542,7 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			// 1. If newer SDK version suggests higher memory capacity - it is ignored
 			// 2. If newer SDK version suggests lower memory capacity - it is lowered
 			// And if 2. happens while user memory containers exist, the left space can be spent on user memory containers
-			ensure(g_fxo->init<lv2_memory_container>(std::min(old_size - total_size, sdk_suggested_mem) + total_size));
+			ensure(fxo::init<lv2_memory_container>(std::min(old_size - total_size, sdk_suggested_mem) + total_size));
 		};
 
 		Emu.current_process().RefAfterKillCallback() = [is_from_vsh, func = std::move(func), argv = std::move(argv), envp = std::move(envp), data = std::move(data),

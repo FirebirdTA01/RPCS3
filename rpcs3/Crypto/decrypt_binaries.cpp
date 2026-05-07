@@ -28,7 +28,7 @@ usz decrypt_binaries_t::decrypt(std::string_view klic_input)
 		// Always start with no KLIC
 		m_klics.emplace_back(u128{});
 
-		if (const auto keys = g_fxo->try_get<loaded_npdrm_keys>())
+		if (const auto keys = fxo::try_get<loaded_npdrm_keys>())
 		{
 			// Second klic: get it from a running game
 			if (const u128 klic = keys->last_key())

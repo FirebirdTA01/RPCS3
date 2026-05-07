@@ -230,7 +230,7 @@ void Emulator::BlockingCallFromMainThread(std::function<void()>&& func, bool tra
 // This function ensures constant initialization order between different compilers and builds
 void init_fxo_for_exec(utils::serial* ar, bool full = false)
 {
-	g_fxo->init<main_ppu_module<lv2_obj>>();
+	fxo::init<main_ppu_module<lv2_obj>>();
 
 	void init_ppu_functions(utils::serial* ar, bool full);
 
@@ -244,6 +244,12 @@ void init_fxo_for_exec(utils::serial* ar, bool full = false)
 	stx::g_launch_retainer = 1;
 
 	g_fxo->init(false, ar, [](){ Emu.ExecPostponedInitCode(); });
+
+	// Bulk-create remaining process-local types in the active process's local_fxo.
+	// Mirrors the g_fxo->init(false) pair: individual fxo::init<T>() calls during load
+	// already filled in some types; this catches any types in the typelist that were
+	// not yet explicitly initialized.
+	Emu.current_process().local_fxo().init(false);
 
 	Emu.GetCallbacks().init_gs_render(ar);
 	Emu.GetCallbacks().init_kb_handler();
@@ -453,6 +459,12 @@ void Emulator::Init()
 		// (rsx::thread, vblank, pad, audio, etc.) must survive the game boot.
 		g_fxo->reset();
 	}
+
+	// Reset the active process's local_fxo so individual fxo::init<T>() calls during
+	// load create fresh types. The remaining types are bulk-initialized later by
+	// init_fxo_for_exec via local_fxo().init(false). The other process's local_fxo
+	// (if any) is untouched so a suspended process retains its kernel-object state.
+	m_processes[m_active_process_index].local_fxo().reset();
 
 	if (!m_co_resident_load)
 	{
@@ -1774,7 +1786,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		{
 			m_processes[m_active_process_index].RefState() = system_state::ready;
 			GetCallbacks().on_ready();
-			ensure(g_fxo->init<main_ppu_module<lv2_obj>>());
+			ensure(fxo::init<main_ppu_module<lv2_obj>>());
 			vm::init();
 			m_processes[m_active_process_index].RefForceBoot() = false;
 
@@ -1862,7 +1874,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 					if (obj == elf_error::ok && ppu_load_exec(obj, true, path))
 					{
-						ensure(g_fxo->try_get<main_ppu_module<lv2_obj>>())->path = path;
+						ensure(fxo::try_get<main_ppu_module<lv2_obj>>())->path = path;
 					}
 					else
 					{
@@ -1893,7 +1905,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 #endif
 				std::vector<ppu_module<lv2_obj>*> mod_list;
 
-				if (auto& _main = *ensure(g_fxo->try_get<main_ppu_module<lv2_obj>>()); !_main.path.empty())
+				if (auto& _main = *ensure(fxo::try_get<main_ppu_module<lv2_obj>>()); !_main.path.empty())
 				{
 					if (!_main.analyse(0, _main.elf_entry, _main.seg0_code_end, _main.applied_patches, std::vector<u32>{}, [](){ return Emu.IsStopped(); }))
 					{
@@ -2572,10 +2584,10 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 			// Co-resident load reuses the suspended process's main_ppu_module — init returns
 			// null when the type is already present in g_fxo, so fall back to try_get.
-			auto* _main = g_fxo->init<main_ppu_module<lv2_obj>>();
+			auto* _main = fxo::init<main_ppu_module<lv2_obj>>();
 			if (!_main)
 			{
-				_main = g_fxo->try_get<main_ppu_module<lv2_obj>>();
+				_main = fxo::try_get<main_ppu_module<lv2_obj>>();
 			}
 			ensure(_main);
 
@@ -2940,12 +2952,12 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 		cpu.state += cpu_flag::dbg_global_pause;
 	};
 
-	if (g_fxo->is_init<id_manager::id_map<named_thread<ppu_thread>>>())
+	if (fxo::is_init<id_manager::id_map<named_thread<ppu_thread>>>())
 	{
 		idm::select<named_thread<ppu_thread>>(on_select);
 	}
 
-	if (g_fxo->is_init<id_manager::id_map<named_thread<spu_thread>>>())
+	if (fxo::is_init<id_manager::id_map<named_thread<spu_thread>>>())
 	{
 		idm::select<named_thread<spu_thread>>(on_select);
 	}
@@ -4044,6 +4056,25 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 		// Final termination from main thread (move the last ownership of join thread in order to destroy it)
 		CallFromMainThread([join_thread = std::move(join_thread), reset_emu_state, verbose_message, stop_watchdog, init_mtx, allow_autoexit, this]()
 		{
+			// Clear local_fxo state before cpu_thread::cleanup() so per-process
+			// named_thread<ppu_thread>/named_thread<spu_thread> instances (held in
+			// id_map<...> in local_fxo) are destroyed first. Under co-resident load
+			// the inactive process's local_fxo is left intact (it represents a
+			// suspended process whose state we want to preserve). On a full Kill
+			// (no co-resident transition in flight) clear every process so we don't
+			// leak the suspended process's threads.
+			if (m_co_resident_load)
+			{
+				m_processes[m_active_process_index].local_fxo().clear();
+			}
+			else
+			{
+				for (auto& proc : m_processes)
+				{
+					proc.local_fxo().clear();
+				}
+			}
+
 			cpu_thread::cleanup();
 
 			lv2_obj::cleanup();
@@ -4227,7 +4258,7 @@ std::string Emulator::GetFormattedTitle(double fps) const
 
 void Emulator::ConfigurePPUCache() const
 {
-	auto& _main = g_fxo->get<main_ppu_module<lv2_obj>>();
+	auto& _main = fxo::get<main_ppu_module<lv2_obj>>();
 
 	_main.cache = rpcs3::utils::get_cache_dir(_main.path);
 

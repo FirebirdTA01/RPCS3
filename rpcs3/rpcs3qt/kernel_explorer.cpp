@@ -210,7 +210,7 @@ kernel_explorer::kernel_explorer(QWidget* parent)
 
 void kernel_explorer::update()
 {
-	const auto dct = g_fxo->try_get<lv2_memory_container>();
+	const auto dct = fxo::try_get<lv2_memory_container>();
 
 	if (!dct)
 	{

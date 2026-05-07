@@ -4234,7 +4234,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 		auto slice = possible_exec_file_paths.pop_all();
 
-		auto main_module = std::move(g_fxo->get<main_ppu_module<lv2_obj>>());
+		auto main_module = std::move(fxo::get<main_ppu_module<lv2_obj>>());
 
 		for (; slice; slice.pop_front(), g_progr_fdone++)
 		{
@@ -4299,7 +4299,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			{
 				while (exec_err == elf_error::ok)
 				{
-					main_ppu_module<lv2_obj>& _main = g_fxo->get<main_ppu_module<lv2_obj>>();
+					main_ppu_module<lv2_obj>& _main = fxo::get<main_ppu_module<lv2_obj>>();
 					_main = {};
 
 					auto current_cache = std::move(g_fxo->get<spu_cache>());
@@ -4344,7 +4344,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			ppu_log.notice("Failed to precompile '%s' as executable (%s)", path, exec_err);
 		}
 
-		g_fxo->get<main_ppu_module<lv2_obj>>() = std::move(main_module);
+		fxo::get<main_ppu_module<lv2_obj>>() = std::move(main_module);
 		g_fxo->get<spu_cache>().collect_funcs_to_precompile = true;
 		Emu.ConfigurePPUCache();
 	});
@@ -4354,7 +4354,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 extern void ppu_initialize()
 {
-	if (!g_fxo->is_init<main_ppu_module<lv2_obj>>())
+	if (!fxo::is_init<main_ppu_module<lv2_obj>>())
 	{
 		return;
 	}
@@ -4364,7 +4364,7 @@ extern void ppu_initialize()
 		return;
 	}
 
-	auto& _main = g_fxo->get<main_ppu_module<lv2_obj>>();
+	auto& _main = fxo::get<main_ppu_module<lv2_obj>>();
 
 	std::optional<scoped_progress_dialog> progress_dialog(std::in_place, get_localized_string(localized_string_id::PROGRESS_DIALOG_ANALYZING_PPU_EXECUTABLE));
 
@@ -4388,7 +4388,7 @@ extern void ppu_initialize()
 	}
 
 	std::vector<ppu_module<lv2_obj>*> module_list;
-	module_list.emplace_back(&g_fxo->get<main_ppu_module<lv2_obj>>());
+	module_list.emplace_back(&fxo::get<main_ppu_module<lv2_obj>>());
 
 	const std::string firmware_sprx_path = vfs::get("/dev_flash/sys/external/");
 

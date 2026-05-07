@@ -557,15 +557,15 @@ lv2_file::lv2_file(utils::serial& ar)
 
 	if (type == lv2_file_type::edata && version >= 2)
 	{
-		ar(g_fxo->get<loaded_npdrm_keys>().one_time_key);
+		ar(fxo::get<loaded_npdrm_keys>().one_time_key);
 	}
 
 	open_result_t res = lv2_file::open(retrieve_real, flags & CELL_FS_O_ACCMODE, mode, size ? &arg : nullptr, size);
 	file = std::move(res.file);
 	real_path = std::move(res.real_path);
 
-	g_fxo->get<loaded_npdrm_keys>().npdrm_fds.raw() += type != lv2_file_type::regular;
-	g_fxo->get<loaded_npdrm_keys>().one_time_key = {};
+	fxo::get<loaded_npdrm_keys>().npdrm_fds.raw() += type != lv2_file_type::regular;
+	fxo::get<loaded_npdrm_keys>().one_time_key = {};
 
 	if (ar.pop<bool>()) // see lv2_file::save in_mem
 	{
@@ -1048,7 +1048,7 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 			file.seek(0);
 			if (magic == "NPD\0"_u32)
 			{
-				auto& edatkeys = g_fxo->get<loaded_npdrm_keys>();
+				auto& edatkeys = fxo::get<loaded_npdrm_keys>();
 
 				const u64 init_pos = edatkeys.dec_keys_pos;
 				const auto& dec_keys = edatkeys.dec_keys;
@@ -1171,7 +1171,7 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 	{
 		shared_ptr<lv2_file> result;
 
-		if (type >= lv2_file_type::sdata && !g_fxo->get<loaded_npdrm_keys>().npdrm_fds.try_inc(16))
+		if (type >= lv2_file_type::sdata && !fxo::get<loaded_npdrm_keys>().npdrm_fds.try_inc(16))
 		{
 			return result;
 		}
@@ -1407,7 +1407,7 @@ error_code sys_fs_close(ppu_thread& ppu, u32 fd)
 	{
 		if (_file.type >= lv2_file_type::sdata)
 		{
-			g_fxo->get<loaded_npdrm_keys>().npdrm_fds--;
+			fxo::get<loaded_npdrm_keys>().npdrm_fds--;
 		}
 
 		return {};
@@ -2247,7 +2247,7 @@ error_code sys_fs_fcntl(ppu_thread& ppu, u32 fd, u32 op, vm::ptr<void> _arg, u32
 		stream.reset(std::move(sdata_file));
 		if (const u32 id = idm::import<lv2_fs_object, lv2_file>([&file = *file, &stream = stream]() -> shared_ptr<lv2_file>
 		{
-			if (!g_fxo->get<loaded_npdrm_keys>().npdrm_fds.try_inc(16))
+			if (!fxo::get<loaded_npdrm_keys>().npdrm_fds.try_inc(16))
 			{
 				return null_ptr;
 			}
@@ -2727,7 +2727,7 @@ error_code sys_fs_fcntl(ppu_thread& ppu, u32 fd, u32 op, vm::ptr<void> _arg, u32
 
 		if (const u32 id = idm::import<lv2_fs_object, lv2_file>([&]() -> shared_ptr<lv2_file>
 		{
-			if (!g_fxo->get<loaded_npdrm_keys>().npdrm_fds.try_inc(16))
+			if (!fxo::get<loaded_npdrm_keys>().npdrm_fds.try_inc(16))
 			{
 				return null_ptr;
 			}

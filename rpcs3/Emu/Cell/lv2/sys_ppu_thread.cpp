@@ -57,7 +57,7 @@ void ppu_thread_exit(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struct ppu_intrp
 	// Deallocate Stack Area
 	ensure(vm::dealloc(ppu.stack_addr, vm::stack) == ppu.stack_size);
 
-	if (auto dct = g_fxo->try_get<lv2_memory_container>())
+	if (auto dct = fxo::try_get<lv2_memory_container>())
 	{
 		dct->free(ppu.stack_size);
 	}
@@ -501,7 +501,7 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 	// 0 and UINT64_MAX both convert to 4096
 	const u64 stack_size = FN(x ? x : 4096)(utils::align<u64>(_stacksz, 4096));
 
-	auto& dct = g_fxo->get<lv2_memory_container>();
+	auto& dct = fxo::get<lv2_memory_container>();
 
 	// Try to obtain "physical memory" from the default container
 	if (!dct.take(stack_size))
