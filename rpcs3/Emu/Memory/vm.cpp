@@ -68,13 +68,20 @@ namespace vm
 
 		// Reserve the same layout as the primary globals: 8 GiB for base + sudo mirror,
 		// plus a separate 12 GiB executable reservation. Total ~20 GiB host VA per process.
-		base_addr = static_cast<u8*>(utils::memory_reserve(0x2'0000'0000, nullptr, true));
+		//
+		// CRITICAL: base_addr must be 4 GiB aligned. vm::get_addr (PPUFunction.h BIND_FUNC)
+		// truncates host pointers to u32 to derive a guest address, which is only correct
+		// when (host_ptr - g_base_addr) == low 32 bits of host_ptr — i.e., g_base_addr's
+		// low 32 bits are zero. The primary process uses memory_reserve_4GiB() for this.
+		// Without alignment, every HLE syscall return overwrites ppu.cia with garbage in
+		// the upper byte, and the JIT's next dispatch lookup segfaults.
+		base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000, true);
 		if (!base_addr)
 			return false;
 
 		sudo_addr = base_addr + 0x1'0000'0000;
 
-		exec_addr = static_cast<u8*>(utils::memory_reserve(0x300000000, nullptr, false));
+		exec_addr = memory_reserve_4GiB(base_addr, 0x300000000, false);
 		if (!exec_addr)
 		{
 			utils::memory_release(base_addr, 0x2'0000'0000);
