@@ -67,6 +67,14 @@ struct ppu_non_sleeping_count_t
 // Base class for some kernel objects (shared set of 8192 objects).
 struct lv2_obj
 {
+	// All concrete lv2_obj subclasses (lv2_prx, lv2_event_queue, lv2_mutex, ...) declare
+	// is_process_local = std::true_type so their objects route to the active process's
+	// local_fxo. The id_map<lv2_obj> bucket itself dispatches via this base typedef:
+	// without it, idm::make_ptr<lv2_obj, lv2_prx>() and idm::select<lv2_obj, lv2_prx>()
+	// disagree on container — make_ptr routes via lv2_prx (local_fxo) while select
+	// routes via lv2_obj (g_fxo by default), and the registered objects are unreachable.
+	using is_process_local = std::true_type;
+
 	static const u32 id_step = 0x100;
 	static const u32 id_count = 8192;
 	static constexpr std::pair<u32, u32> id_invl_range = {0, 8};
