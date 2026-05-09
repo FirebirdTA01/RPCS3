@@ -1074,7 +1074,7 @@ void Emulator::SetContinuousMode(bool continuous_mode)
 {
 	m_continuous_mode = continuous_mode;
 
-	if (GSRender* render = static_cast<GSRender*>(g_fxo->try_get<rsx::thread>()))
+	if (GSRender* render = static_cast<GSRender*>(fxo::try_get<rsx::thread>()))
 	{
 		render->set_continuous_mode(continuous_mode);
 	}
@@ -2749,7 +2749,7 @@ void Emulator::Run(bool start_playtime)
 	// of a second process: VSH→game) RSX is already past init, so fire RunPPU
 	// directly — otherwise the new process's PPU threads sit in cpu_thread::
 	// operator() with stop set and never enter cpu_task.
-	if (auto rsx = g_fxo->try_get<rsx::thread>(); rsx && rsx->is_initialized)
+	if (auto rsx = fxo::try_get<rsx::thread>(); rsx && rsx->is_initialized)
 	{
 		RunPPU();
 	}
@@ -2885,7 +2885,7 @@ void Emulator::FinalizeRunRequest()
 		ppu.state += add_flags;
 	};
 
-	if (auto rsx = g_fxo->try_get<rsx::thread>())
+	if (auto rsx = fxo::try_get<rsx::thread>())
 	{
 		static_cast<cpu_thread*>(rsx)->add_remove_flags(add_flags, cpu_flag::suspend);
 	}
@@ -2992,7 +2992,7 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 		idm::select<named_thread<spu_thread>>(on_select);
 	}
 
-	if (auto rsx = g_fxo->try_get<rsx::thread>())
+	if (auto rsx = fxo::try_get<rsx::thread>())
 	{
 		rsx->state += cpu_flag::dbg_global_pause;
 	}
@@ -3128,7 +3128,7 @@ void Emulator::Resume()
 	idm::select<named_thread<ppu_thread>>(on_select);
 	idm::select<named_thread<spu_thread>>(on_select);
 
-	if (auto rsx = g_fxo->try_get<rsx::thread>())
+	if (auto rsx = fxo::try_get<rsx::thread>())
 	{
 		// TODO: notify?
 		rsx->state -= cpu_flag::dbg_global_pause;
@@ -3563,7 +3563,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 	// Signal threads
 	m_processes[m_active_process_index].RefState().notify_all();
 
-	if (auto rsx = g_fxo->try_get<rsx::thread>())
+	if (auto rsx = fxo::try_get<rsx::thread>())
 	{
 		*static_cast<cpu_thread*>(rsx) = thread_state::aborting;
 	}
@@ -5012,7 +5012,7 @@ void Emulator::set_active_process(u32 pid)
 	// the early-return guards in sys_rsx_*, (3) swap g_base_addr/g_pages, then
 	// (4) load incoming state. Vblank reading at any point sees either matching
 	// (base_addr, fields) or a zeroed driver_info that the guards catch.
-	if (auto rsx = g_fxo->try_get<rsx::thread>())
+	if (auto rsx = fxo::try_get<rsx::thread>())
 	{
 		// rsx->pause() blocks until rsx::thread acks via its own wait_pause poll
 		// (do NOT call wait_pause from this thread — it spins until unpause and deadlocks).

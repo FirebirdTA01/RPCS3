@@ -858,7 +858,7 @@ cpu_thread* debugger_frame::get_cpu()
 
 	if (m_rsx)
 	{
-		if (g_fxo->try_get<rsx::thread>() != m_rsx || !m_rsx->ctrl || m_rsx->state.all_of(cpu_flag::wait + cpu_flag::exit))
+		if (fxo::try_get<rsx::thread>() != m_rsx || !m_rsx->ctrl || m_rsx->state.all_of(cpu_flag::wait + cpu_flag::exit))
 		{
 			return nullptr;
 		}
@@ -910,7 +910,7 @@ std::function<cpu_thread*()> debugger_frame::make_check_cpu(cpu_thread* cpu, boo
 
 	if (type == thread_class::rsx)
 	{
-		if (g_fxo->try_get<rsx::thread>() != cpu)
+		if (fxo::try_get<rsx::thread>() != cpu)
 		{
 			return []() { return null_cpu; };
 		}
@@ -943,7 +943,7 @@ std::function<cpu_thread*()> debugger_frame::make_check_cpu(cpu_thread* cpu, boo
 		}
 
 		// RSX
-		const auto rsx = g_fxo->try_get<rsx::thread>();
+		const auto rsx = fxo::try_get<rsx::thread>();
 
 		if (cpu)
 		{
@@ -1138,7 +1138,7 @@ void debugger_frame::UpdateUnitList()
 			idm::select<named_thread<spu_thread>>(on_select, idm::unlocked);
 		}
 
-		if (const auto render = g_fxo->try_get<rsx::thread>(); render && render->ctrl)
+		if (const auto render = fxo::try_get<rsx::thread>(); render && render->ctrl)
 		{
 			on_select(render->id, *render);
 		}

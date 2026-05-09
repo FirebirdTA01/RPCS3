@@ -480,11 +480,11 @@ namespace rsx
 
 	inline thread* get_current_renderer()
 	{
-		return g_fxo->try_get<rsx::thread>();
+		return fxo::try_get<rsx::thread>();
 	}
 
 	inline const backend_configuration& get_renderer_backend_config()
 	{
-		return g_fxo->get<rsx::thread>().get_backend_config();
+		return fxo::get<rsx::thread>().get_backend_config();
 	}
 }

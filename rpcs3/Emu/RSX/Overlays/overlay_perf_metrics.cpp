@@ -516,7 +516,7 @@ namespace rsx
 				{
 					m_update_timer.Start();
 
-					auto& rsx_thread = g_fxo->get<rsx::thread>();
+					auto& rsx_thread = fxo::get<rsx::thread>();
 
 					switch (m_detail)
 					{

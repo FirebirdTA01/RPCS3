@@ -109,7 +109,7 @@ raw_mouse::mouse_button raw_mouse::get_mouse_button(const cfg::string& button)
 void raw_mouse::update_window_handle()
 {
 #ifdef _WIN32
-	if (GSRender* render = static_cast<GSRender*>(g_fxo->try_get<rsx::thread>()))
+	if (GSRender* render = static_cast<GSRender*>(fxo::try_get<rsx::thread>()))
 	{
 		if (GSFrameBase* frame = render->get_frame())
 		{
