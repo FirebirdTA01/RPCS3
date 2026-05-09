@@ -62,8 +62,8 @@ public:
 	u32 pid() const { return m_pid; }
 	void set_pid(u32 pid) { m_pid = pid; }
 
-	stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() { return m_local_fxo; }
-	const stx::manual_typemap<lv2_process, 0x10'0000, 32>& local_fxo() const { return m_local_fxo; }
+	stx::manual_typemap<lv2_process, 0x20'00000, 128>& local_fxo() { return m_local_fxo; }
+	const stx::manual_typemap<lv2_process, 0x20'00000, 128>& local_fxo() const { return m_local_fxo; }
 
 	vm::vm_handle& vm_handle() { return vm; }
 	const vm::vm_handle& vm_handle() const { return vm; }
@@ -247,7 +247,7 @@ private:
 	atomic_t<u64> m_pause_amend_time{0};
 	atomic_t<system_state> m_state{system_state::stopped};
 	u32 m_pid = 1;
-	stx::manual_typemap<lv2_process, 0x10'0000, 32> m_local_fxo;
+	stx::manual_typemap<lv2_process, 0x20'00000, 128> m_local_fxo;
 	vm::vm_handle vm;
 	rsx::rsx_context_state rsx_state;
 };

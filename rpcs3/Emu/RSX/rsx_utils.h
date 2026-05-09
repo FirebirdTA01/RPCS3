@@ -149,6 +149,8 @@ namespace rsx
 
 	struct avconf
 	{
+		using is_process_local = std::true_type;
+
 		bool stereo_enabled = false; // Stereo 3D display mode
 		u8 format = 0;               // XRGB
 		u8 aspect = 0;               // AUTO

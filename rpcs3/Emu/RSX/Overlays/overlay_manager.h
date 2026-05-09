@@ -39,6 +39,7 @@ namespace rsx
 			void on_overlay_removed(const std::shared_ptr<overlay>& item);
 
 		public:
+			using is_process_local = std::true_type;
 			// Disable default construction to make it conditionally available in g_fxo
 			explicit display_manager(int) noexcept;
 

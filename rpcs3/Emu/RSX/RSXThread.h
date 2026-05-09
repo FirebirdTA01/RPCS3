@@ -102,6 +102,7 @@ namespace rsx
 	class thread : public cpu_thread, public GCM_context, public GRAPH_backend
 	{
 	public:
+		using is_process_local = std::true_type;
 		// Per-process RSX state pointer — swapped on set_active_process
 		class rsx_context_state* m_rsx_state = nullptr;
 		u64 timestamp_ctrl = 0;

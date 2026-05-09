@@ -138,6 +138,12 @@ namespace fxo
 		return access<T>().template init<T>(std::forward<Args>(args)...);
 	}
 
+	template <typename T, typename As, typename... Args>
+	static As* init(Args&&... args)
+	{
+		return access<T>().template init<T, As>(std::forward<Args>(args)...);
+	}
+
 	template <typename T>
 	static T& get() { return access<T>().template get<T>(); }
 

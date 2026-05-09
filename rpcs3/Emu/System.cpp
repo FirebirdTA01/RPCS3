@@ -938,7 +938,7 @@ bool Emulator::BootRsxCapture(const std::string& path)
 	m_processes[m_active_process_index].RefState() = system_state::starting;
 	m_processes[m_active_process_index].RefState().notify_all();
 
-	ensure(g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay", std::move(frame)));
+	ensure(fxo::init<named_thread<rsx::rsx_replay_thread>>("RSX Replay", std::move(frame)));
 
 	return true;
 }

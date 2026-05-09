@@ -721,7 +721,7 @@ namespace rsx
 
 		if (g_cfg.misc.use_native_interface && (g_cfg.video.renderer == video_renderer::opengl || g_cfg.video.renderer == video_renderer::vulkan))
 		{
-			m_overlay_manager = g_fxo->init<rsx::overlays::display_manager>(0);
+			m_overlay_manager = fxo::init<rsx::overlays::display_manager>(0);
 
 			if (g_cfg.misc.play_music_during_boot)
 			{

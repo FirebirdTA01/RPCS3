@@ -76,7 +76,7 @@ void headless_application::InitializeCallbacks()
 		{
 		case video_renderer::null:
 		{
-			g_fxo->init<rsx::thread, named_thread<NullGSRender>>(ar);
+			fxo::init<rsx::thread, named_thread<NullGSRender>>(ar);
 			break;
 		}
 		case video_renderer::opengl:

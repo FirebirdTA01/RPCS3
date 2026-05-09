@@ -185,6 +185,7 @@ namespace rsx
 		std::unique_ptr<frame_capture_data> frame;
 
 	public:
+		using is_process_local = std::true_type;
 		rsx_replay_thread(std::unique_ptr<frame_capture_data>&& frame_data)
 			: cpu_thread(0)
 			, frame(std::move(frame_data))

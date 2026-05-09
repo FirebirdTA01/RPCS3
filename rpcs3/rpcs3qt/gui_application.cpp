@@ -666,20 +666,20 @@ void gui_application::InitializeCallbacks()
 		{
 		case video_renderer::null:
 		{
-			g_fxo->init<rsx::thread, named_thread<NullGSRender>>(ar);
+			fxo::init<rsx::thread, named_thread<NullGSRender>>(ar);
 			break;
 		}
 		case video_renderer::opengl:
 		{
 #if not defined(__APPLE__)
-			g_fxo->init<rsx::thread, named_thread<GLGSRender>>(ar);
+			fxo::init<rsx::thread, named_thread<GLGSRender>>(ar);
 #endif
 			break;
 		}
 		case video_renderer::vulkan:
 		{
 #if defined(HAVE_VULKAN)
-			g_fxo->init<rsx::thread, named_thread<VKGSRender>>(ar);
+			fxo::init<rsx::thread, named_thread<VKGSRender>>(ar);
 #endif
 			break;
 		}

@@ -118,6 +118,7 @@ namespace rsx
 		std::shared_ptr<named_thread<std::function<void()>>> m_thread;
 
 	public:
+		using is_process_local = std::true_type;
 		vblank_thread() = default;
 		vblank_thread(const vblank_thread&) = delete;
 

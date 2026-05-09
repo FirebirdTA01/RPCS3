@@ -60,6 +60,7 @@ namespace rsx
 		const u32 max_immediate_transfer_size = 3584;
 
 	public:
+		using is_process_local = std::true_type;
 		dma_manager() = default;
 
 		// initialization
