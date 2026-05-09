@@ -1040,31 +1040,41 @@ struct ppu_far_jumps_t
 
 		if (!it->second.func)
 		{
-			// Known limitation: JIT far-jump trampolines embed base+pc at build time —
-			// not safe across process switches. Resolution: rewrite trampolines to load
-			// active base at runtime. Needed before cross-process JIT execution can be supported.
-			// See build-function trampoline below (lines ~1047, ~1061).
+			// Trampoline loads the active process's vm::g_base_addr at runtime
+			// rather than baking it in at build time. ppu_far_jumps_t is
+			// per-process so any single trampoline only ever runs under the
+			// process that built it, but the runtime load also makes the
+			// trampoline correct if a future change shares them.
 			it->second.func = build_function_asm<ppu_intrp_func_t>("", [&](native_asm& c, auto& args)
 			{
 				using namespace asmjit;
 
 #ifdef ARCH_X64
 				c.mov(args[0], x86::rbp);
-				c.mov(args[2], vm::g_base_addr + pc); // TODO: requires runtime base resolution for cross-process JIT execution
+				// args[2] = vm::g_base_addr + pc, computed at call time.
+				c.movabs(x86::rax, reinterpret_cast<u64>(&vm::g_base_addr));
+				c.mov(args[2], x86::qword_ptr(x86::rax));
+				if (pc) c.add(args[2], pc);
 				c.jmp(ppu_far_jump);
 #else
 				Label jmp_address = c.newLabel();
-				Label this_op_address = c.newLabel();
+				Label base_addr_global = c.newLabel();
 
-				c.ldr(args[2], arm::ptr(this_op_address));
+				// Load &vm::g_base_addr, then deref, then add pc.
+				c.ldr(args[1], arm::ptr(base_addr_global));
+				c.ldr(args[2], arm::Mem(args[1]));
+				if (pc)
+				{
+					c.add(args[2], args[2], Imm(pc));
+				}
 				c.ldr(args[1], arm::ptr(jmp_address));
 				c.br(args[1]);
 
 				c.align(AlignMode::kCode, 16);
 				c.bind(jmp_address);
 				c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
-				c.bind(this_op_address);
-				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc); // TODO: requires runtime base resolution for cross-process JIT execution
+				c.bind(base_addr_global);
+				c.embedUInt64(reinterpret_cast<u64>(&vm::g_base_addr));
 #endif
 			}, &rt);
 		}
