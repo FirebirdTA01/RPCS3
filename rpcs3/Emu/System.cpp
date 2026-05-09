@@ -5215,22 +5215,26 @@ void Emulator::resume_process(u32 pid)
 
 	sys_log.notice("resume_process: pid=%u", pid);
 
-	// Clear process_suspended flag on all PPU threads belonging to this process
+	// suspend_process pairs cpu_flag::process_suspended with cpu_flag::yield to
+	// force a parking yield in the JIT state-check path. resume_process must
+	// clear BOTH — leaving yield set causes the dispatcher's yield-handler at
+	// CPUThread.cpp:~1126 to take an 80us short-sleep at every state check,
+	// throttling the resumed thread to a near standstill (each state check
+	// blocks until s_dummy_atomic wakes, which only fires on stop signals).
 	idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& ppu)
 	{
 		if (ppu.owner_pid == pid)
 		{
-			ppu.state -= cpu_flag::process_suspended;
+			ppu.state -= (cpu_flag::process_suspended + cpu_flag::yield);
 			ppu.state.notify_one();
 		}
 	});
 
-	// Same for SPU threads
 	idm::select<named_thread<spu_thread>>([&](u32, named_thread<spu_thread>& spu)
 	{
 		if (spu.owner_pid == pid)
 		{
-			spu.state -= cpu_flag::process_suspended;
+			spu.state -= (cpu_flag::process_suspended + cpu_flag::yield);
 			spu.state.notify_one();
 		}
 	});
