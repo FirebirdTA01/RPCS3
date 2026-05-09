@@ -28,6 +28,15 @@ DECLARE(cpu_thread::g_threads_created){0};
 DECLARE(cpu_thread::g_threads_deleted){0};
 DECLARE(cpu_thread::g_suspend_counter){0};
 
+const u32 g_jit_layout_fingerprint = []
+{
+	u32 h = 0x811c9dc5u;
+	h = (h ^ static_cast<u32>(sizeof(cpu_thread))) * 0x01000193u;
+	h = (h ^ static_cast<u32>(sizeof(ppu_thread))) * 0x01000193u;
+	h = (h ^ static_cast<u32>(sizeof(spu_thread))) * 0x01000193u;
+	return h;
+}();
+
 LOG_CHANNEL(profiler);
 LOG_CHANNEL(sys_log, "SYS");
 

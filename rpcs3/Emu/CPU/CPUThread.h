@@ -308,6 +308,11 @@ private:
 	static thread_local cpu_thread* g_tls_this_thread;
 };
 
+// JIT cache invalidation fingerprint: changes when cpu_thread,
+// ppu_thread, or spu_thread layout changes (sizeof shifts),
+// forcing all LLVM/ASMJIT object caches to rebuild.
+extern const u32 g_jit_layout_fingerprint;
+
 template <DerivedFrom<cpu_thread> T = cpu_thread>
 inline T* get_current_cpu_thread() noexcept
 {
