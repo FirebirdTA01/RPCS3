@@ -85,6 +85,9 @@ namespace vm
 	// Unregister reader
 	void passive_unlock(cpu_thread& cpu);
 
+	// Release passive-lock slots held by the given threads (multi-process suspend path).
+	void release_passive_locks_for(const std::vector<cpu_thread*>& threads);
+
 	// Optimization (set cpu_flag::memory)
 	bool temporary_unlock(cpu_thread& cpu) noexcept;
 	void temporary_unlock() noexcept;

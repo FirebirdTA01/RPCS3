@@ -2,6 +2,7 @@
 #include "VFS.h"
 #include "Utilities/bin_patch.h"
 #include "Emu/Memory/vm.h"
+#include "Emu/Memory/vm_locking.h"
 #include "Emu/System.h"
 #include "Emu/system_progress.hpp"
 #include "Emu/RSX/RSXThread.h"
@@ -5154,6 +5155,15 @@ void Emulator::suspend_process(u32 pid)
 			std::this_thread::yield();
 		}
 	}
+
+	// Release the passive-lock slots held by the suspended threads. The slots
+	// (vm::g_locks, sized to ppu_threads — typically 2) are required for any
+	// PPU thread to acquire memory passive lock via _register_lock; without
+	// release, the launched co-resident process's main_thread spins forever
+	// in _register_lock searching for a free slot because all are held by
+	// pid=1's still-alive but parked threads. Each released thread will
+	// re-acquire on its next check_state when resumed, via cpu_flag::memory.
+	vm::release_passive_locks_for(targets);
 
 	sys_log.notice("suspend_process: pid=%u barrier complete (%zu threads parked)", pid, targets.size());
 }

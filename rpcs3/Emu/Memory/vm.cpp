@@ -476,6 +476,38 @@ namespace vm
 		}
 	}
 
+	// Release passive-lock slots held by the given threads. Used by the
+	// multi-process suspend path to free up g_locks slots so that the
+	// resumed/launched process's threads can register without spinning in
+	// _register_lock — the passive-lock array is sized to ppu_threads (default
+	// 2), and suspended-but-still-alive threads continue to hold their slots
+	// until something explicitly releases them. Each affected thread will
+	// re-acquire on its next check_state via the cpu_flag::memory path.
+	void release_passive_locks_for(const std::vector<cpu_thread*>& threads)
+	{
+		u32 released = 0;
+		u32 slot_idx = 0;
+		for (auto& slot : g_locks)
+		{
+			cpu_thread* holder = slot.load();
+			vm_log.warning("release_passive_locks_for: g_locks[%u]=%p", slot_idx++, static_cast<void*>(holder));
+			if (!holder)
+				continue;
+
+			for (cpu_thread* t : threads)
+			{
+				if (holder == t)
+				{
+					slot.compare_and_swap(t, nullptr);
+					t->state += cpu_flag::memory;
+					released++;
+					break;
+				}
+			}
+		}
+		vm_log.warning("release_passive_locks_for: released=%u of %zu threads", released, threads.size());
+	}
+
 	bool temporary_unlock(cpu_thread& cpu) noexcept
 	{
 		bs_t<cpu_flag> add_state = cpu_flag::wait;
