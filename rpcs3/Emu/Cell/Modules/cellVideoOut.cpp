@@ -141,7 +141,7 @@ error_code cellVideoOutGetState(u32 videoOut, u32 deviceIndex, vm::ptr<CellVideo
 	{
 	case CELL_VIDEO_OUT_PRIMARY:
 	{
-		const auto& conf = g_fxo->get<rsx::avconf>();
+		const auto& conf = fxo::get<rsx::avconf>();
 		state->state = CELL_VIDEO_OUT_OUTPUT_STATE_ENABLED;
 		state->colorSpace = CELL_VIDEO_OUT_COLOR_SPACE_RGB;
 		state->displayMode.resolutionId = conf.state ? conf.resolution_id : ::at32(g_video_out_resolution_id, g_cfg.video.resolution);
@@ -209,7 +209,7 @@ error_code cellVideoOutConfigure(u32 videoOut, vm::ptr<CellVideoOutConfiguration
 		return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_DISPLAY_MODE;
 	}
 
-	auto& conf = g_fxo->get<rsx::avconf>();
+	auto& conf = fxo::get<rsx::avconf>();
 	conf.resolution_id = config->resolutionId;
 	conf.stereo_enabled = (config->resolutionId >= CELL_VIDEO_OUT_RESOLUTION_720_3D_FRAME_PACKING) && g_cfg.video.stereo_enabled;
 	conf.aspect = config->aspect;
@@ -254,7 +254,7 @@ error_code cellVideoOutGetConfiguration(u32 videoOut, vm::ptr<CellVideoOutConfig
 	{
 	case CELL_VIDEO_OUT_PRIMARY:
 	{
-		if (const auto& conf = g_fxo->get<rsx::avconf>(); conf.state)
+		if (const auto& conf = fxo::get<rsx::avconf>(); conf.state)
 		{
 			config->resolutionId = conf.resolution_id;
 			config->format = conf.format;

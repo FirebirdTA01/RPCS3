@@ -53,7 +53,7 @@ namespace rsx
 					rsx_log.notice("User selected friends in home menu");
 					Emu.CallFromMainThread([]()
 					{
-						if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+						if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 						{
 							const error_code result = manager->create<rsx::overlays::friends_list_dialog>()->show(true, [](s32 status)
 							{
@@ -87,7 +87,7 @@ namespace rsx
 					rsx_log.notice("User selected trophies in home menu");
 					Emu.CallFromMainThread([trop_name]()
 					{
-						if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+						if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 						{
 							manager->create<rsx::overlays::trophy_list_dialog>()->show(trop_name);
 						}

@@ -133,7 +133,7 @@ std::shared_ptr<OskDialogBase> _get_osk_dialog(bool create)
 			return nullptr;
 		}
 
-		if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+		if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 		{
 			std::shared_ptr<rsx::overlays::osk_dialog> dlg = std::make_shared<rsx::overlays::osk_dialog>();
 			osk.dlg = manager->add(dlg);

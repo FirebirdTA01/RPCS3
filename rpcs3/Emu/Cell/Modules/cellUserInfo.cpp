@@ -152,7 +152,7 @@ error_code cellUserInfoSelectUser_ListType(vm::ptr<CellUserInfoTypeSet> listType
 		}
 	}
 
-	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+	if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 	{
 		if (g_fxo->get<user_info_manager>().dialog_opened.exchange(true))
 		{
@@ -261,7 +261,7 @@ error_code cellUserInfoSelectUser_SetList(vm::ptr<CellUserInfoListSet> setList, 
 
 	// TODO: does this function return an error if any (user_id > 0 && not_found) ?
 
-	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+	if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 	{
 		if (g_fxo->get<user_info_manager>().dialog_opened.exchange(true))
 		{

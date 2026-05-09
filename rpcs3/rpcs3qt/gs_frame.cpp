@@ -541,7 +541,7 @@ void gs_frame::toggle_recording()
 		}
 		case audio_provider::rsxaudio:
 		{
-			const auto& rsx_audio = g_fxo->get<rsx_audio_backend>();
+			const auto& rsx_audio = fxo::get<rsx_audio_backend>();
 			m_video_encoder->set_sample_rate(rsx_audio.get_sample_rate());
 			m_video_encoder->set_audio_channels(rsx_audio.get_channel_count());
 			break;
@@ -983,7 +983,7 @@ void gs_frame::take_screenshot(std::vector<u8>&& data, u32 sshot_width, u32 ssho
 			QImage img(sshot_data_alpha.data(), sshot_width, sshot_height, sshot_width * 4, QImage::Format_RGBA8888);
 
 			// Scale image if necessary
-			const auto& avconf = g_fxo->get<rsx::avconf>();
+			const auto& avconf = fxo::get<rsx::avconf>();
 			auto new_size = avconf.aspect_convert_dimensions(size2u{ u32(img.width()), u32(img.height()) });
 
 			if (new_size.width != static_cast<u32>(img.width()) || new_size.height != static_cast<u32>(img.height()))

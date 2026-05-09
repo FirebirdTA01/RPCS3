@@ -952,7 +952,7 @@ namespace rsx
 
 		if (!is_initialized)
 		{
-			g_fxo->get<rsx::dma_manager>().init();
+			fxo::get<rsx::dma_manager>().init();
 			on_init_thread();
 
 			if (in_begin_end)
@@ -1030,7 +1030,7 @@ namespace rsx
 			return;
 		}
 
-		g_fxo->get<vblank_thread>().set_thread(std::shared_ptr<named_thread<std::function<void()>>>(new named_thread<std::function<void()>>("VBlank Thread"sv, [this]() -> void
+		fxo::get<vblank_thread>().set_thread(std::shared_ptr<named_thread<std::function<void()>>>(new named_thread<std::function<void()>>("VBlank Thread"sv, [this]() -> void
 		{
 #ifdef __linux__
 			constexpr u32 host_min_quantum = 10;
@@ -1113,7 +1113,7 @@ namespace rsx
 		{
 			~join_vblank() noexcept
 			{
-				g_fxo->get<vblank_thread>() = thread_state::finished;
+				fxo::get<vblank_thread>() = thread_state::finished;
 			}
 
 		} join_vblank_obj{};
@@ -1126,7 +1126,7 @@ namespace rsx
 			thread_ctrl::set_thread_affinity_mask(thread_ctrl::get_affinity_mask(thread_class::rsx));
 		}
 
-		if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+		if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 		{
 			manager->stop_audio();
 		}
@@ -1191,8 +1191,8 @@ namespace rsx
 		std::this_thread::sleep_for(10ms);
 		do_local_task(rsx::FIFO::state::lock_wait);
 
-		g_fxo->get<rsx::dma_manager>().join();
-		g_fxo->get<vblank_thread>() = thread_state::finished;
+		fxo::get<rsx::dma_manager>().join();
+		fxo::get<vblank_thread>() = thread_state::finished;
 		state += cpu_flag::exit;
 	}
 
@@ -2659,7 +2659,7 @@ namespace rsx
 		m_graphics_state |= rsx::pipeline_state::fragment_constants_dirty;
 
 		// DMA sync; if you need this, don't use MTRSX
-		// g_fxo->get<rsx::dma_manager>().sync();
+		// fxo::get<rsx::dma_manager>().sync();
 
 		//TODO: On sync every sub-unit should finish any pending tasks
 		//Might cause zcull lockup due to zombie 'unclaimed reports' which are not forcefully removed currently
@@ -3003,7 +3003,7 @@ namespace rsx
 				}
 			}
 
-			auto& cfg = g_fxo->get<gcm_config>();
+			auto& cfg = fxo::get<gcm_config>();
 
 			std::optional<std::unique_lock<shared_mutex>> hle_lock;
 
@@ -3145,7 +3145,7 @@ namespace rsx
 		{
 			if (g_cfg.video.multithreaded_rsx)
 			{
-				g_fxo->get<rsx::dma_manager>().sync();
+				fxo::get<rsx::dma_manager>().sync();
 			}
 
 			external_interrupt_ack.store(true);

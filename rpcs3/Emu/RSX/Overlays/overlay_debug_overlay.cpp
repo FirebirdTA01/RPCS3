@@ -46,7 +46,7 @@ namespace rsx
 			if (!g_cfg.misc.use_native_interface)
 				return;
 
-			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 			{
 				auto overlay = manager->get<rsx::overlays::debug_overlay>();
 
@@ -69,7 +69,7 @@ namespace rsx
 			if (!g_cfg.misc.use_native_interface || (!g_cfg.video.debug_overlay && !g_cfg.io.pad_debug_overlay && !g_cfg.io.mouse_debug_overlay))
 				return;
 
-			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 			{
 				if (auto overlay = manager->get<rsx::overlays::debug_overlay>())
 				{

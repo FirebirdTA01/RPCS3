@@ -432,7 +432,7 @@ namespace rsx
 				s32 result = 0;
 				u32 focused = 0;
 
-				if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+				if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 				{
 					result = manager->create<rsx::overlays::media_list_dialog>()->show(root_media_entry, media, title, focused, true);
 				}

@@ -25,7 +25,7 @@ s32 save_data_dialog::ShowSaveDataList(const std::string& base_dir, std::vector<
 	}
 
 	// TODO: Install native shell as an Emu callback
-	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+	if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 	{
 		cellSaveData.notice("ShowSaveDataList: Showing native UI dialog");
 

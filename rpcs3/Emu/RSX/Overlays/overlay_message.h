@@ -141,7 +141,7 @@ namespace rsx
 			bool allow_refresh = false,
 			bool compare_id = false)
 		{
-			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 			{
 				auto msg_overlay = manager->get<rsx::overlays::message>();
 				if (!msg_overlay)

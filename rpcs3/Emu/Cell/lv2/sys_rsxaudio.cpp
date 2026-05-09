@@ -143,7 +143,7 @@ error_code sys_rsxaudio_initialize(vm::ptr<u32> handle)
 {
 	sys_rsxaudio.trace("sys_rsxaudio_initialize(handle=*0x%x)", handle);
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+	auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 
 	if (rsxaudio_thread.rsxaudio_ctx_allocated.test_and_set())
 	{
@@ -219,7 +219,7 @@ error_code sys_rsxaudio_finalize(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+	auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 
 	{
 		std::lock_guard ra_obj_lock{rsxaudio_thread.rsxaudio_obj_upd_m};
@@ -369,7 +369,7 @@ error_code sys_rsxaudio_close_connection(u32 handle)
 	}
 
 	{
-		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+		auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 		std::lock_guard ra_obj_lock{rsxaudio_thread.rsxaudio_obj_upd_m};
 		rsxaudio_thread.rsxaudio_obj_ptr = null_ptr;
 	}
@@ -400,7 +400,7 @@ error_code sys_rsxaudio_prepare_process(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+	auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 	std::lock_guard ra_obj_lock{rsxaudio_thread.rsxaudio_obj_upd_m};
 
 	if (rsxaudio_thread.rsxaudio_obj_ptr)
@@ -444,7 +444,7 @@ error_code sys_rsxaudio_start_process(u32 handle)
 		uf.unk1         = 0;
 	}
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+	auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 	rsxaudio_thread.update_hw_param([&](auto& param)
 	{
 		if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SERIAL)].active)  param.serial.dma_en   = true;
@@ -481,7 +481,7 @@ error_code sys_rsxaudio_stop_process(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+	auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 
 	rsxaudio_thread.update_hw_param([&](auto& param)
 	{
@@ -980,7 +980,7 @@ void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_
 		port_cfg[static_cast<u8>(RsxaudioAvportIdx::HDMI_0)] = gen_hdmi_port_cfg(0);
 		port_cfg[static_cast<u8>(RsxaudioAvportIdx::HDMI_1)] = gen_hdmi_port_cfg(1);
 		// TODO: ideally, old data must be flushed from backend buffers if channel became inactive or its src changed
-		g_fxo->get<rsx_audio_backend>().set_new_stream_param(port_cfg, calc_avport_mute_state(*new_hw_param));
+		fxo::get<rsx_audio_backend>().set_new_stream_param(port_cfg, calc_avport_mute_state(*new_hw_param));
 
 		timer.vtimer_access_sec([&]()
 		{
@@ -1053,7 +1053,7 @@ void rsxaudio_data_thread::update_mute_state(RsxaudioPort port, bool muted)
 		}
 		}
 
-		g_fxo->get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(*new_hw_param));
+		fxo::get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(*new_hw_param));
 
 		return new_hw_param;
 	});
@@ -1097,7 +1097,7 @@ void rsxaudio_data_thread::update_av_mute_state(RsxaudioAvportIdx avport, bool m
 		}
 		}
 
-		g_fxo->get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(*new_hw_param));
+		fxo::get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(*new_hw_param));
 
 		return new_hw_param;
 	});
@@ -1243,7 +1243,7 @@ void rsxaudio_data_thread::pcm_spdif_process_channel(RsxaudioSampleSize word_bit
 
 bool rsxaudio_data_thread::enqueue_data(RsxaudioPort dst, bool silence, const void* src_addr, const rsxaudio_hw_param_t& hwp)
 {
-	auto& backend_thread = g_fxo->get<rsx_audio_backend>();
+	auto& backend_thread = fxo::get<rsx_audio_backend>();
 
 	if (dst == RsxaudioPort::SERIAL)
 	{
@@ -1301,9 +1301,9 @@ namespace audio
 {
 	extern void configure_rsxaudio()
 	{
-		if (g_cfg.audio.provider == audio_provider::rsxaudio && g_fxo->is_init<rsx_audio_backend>())
+		if (g_cfg.audio.provider == audio_provider::rsxaudio && fxo::is_init<rsx_audio_backend>())
 		{
-			g_fxo->get<rsx_audio_backend>().update_emu_cfg();
+			fxo::get<rsx_audio_backend>().update_emu_cfg();
 		}
 	}
 }

@@ -426,7 +426,7 @@ struct video_disable_signal_cmd : public ps3av_cmd
 
 		if (pkt->avport <= static_cast<u16>(UartAudioAvport::HDMI_1))
 		{
-			g_fxo->get<rsx_audio_data>().update_av_mute_state(vuart.avport_to_idx(static_cast<UartAudioAvport>(pkt->avport.get())), false, true);
+			fxo::get<rsx_audio_data>().update_av_mute_state(vuart.avport_to_idx(static_cast<UartAudioAvport>(pkt->avport.get())), false, true);
 
 			if (pkt->avport == static_cast<u16>(UartAudioAvport::HDMI_1) && !g_cfg.core.debug_console_mode)
 			{
@@ -505,7 +505,7 @@ struct av_audio_mute_cmd : public ps3av_cmd
 			return;
 		}
 
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(vuart.avport_to_idx(static_cast<UartAudioAvport>(pkt->avport.get())), true, false, pkt->mute);
+		fxo::get<rsx_audio_data>().update_av_mute_state(vuart.avport_to_idx(static_cast<UartAudioAvport>(pkt->avport.get())), true, false, pkt->mute);
 
 		vuart.write_resp<true>(pkt->hdr.cid, PS3AV_STATUS_SUCCESS);
 	}
@@ -839,7 +839,7 @@ struct audio_init_cmd : public ps3av_cmd
 			return;
 		}
 
-		g_fxo->get<rsx_audio_data>().reset_hw();
+		fxo::get<rsx_audio_data>().reset_hw();
 
 		vuart.write_resp(pkt->cid, PS3AV_STATUS_SUCCESS);
 	}
@@ -973,7 +973,7 @@ private:
 	bool commit_param(RsxaudioPort rsxaudio_port, RsxaudioAvportIdx avport, RsxaudioPort avport_src, UartAudioFreq freq,
 						UartAudioSampleSize bit_cnt, bool spdif_use_serial_buf, const u8 *cs_data)
 	{
-		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+		auto& rsxaudio_thread = fxo::get<rsx_audio_data>();
 		const auto avport_idx = static_cast<std::underlying_type_t<decltype(avport)>>(avport);
 		const auto rsxaudio_word_depth = bit_cnt == UartAudioSampleSize::_16BIT ? RsxaudioSampleSize::_16BIT : RsxaudioSampleSize::_32BIT;
 		const auto freq_param = [&]()
@@ -1055,13 +1055,13 @@ struct audio_mute_cmd : public ps3av_cmd
 		case UartAudioAvport::HDMI_1:
 		case UartAudioAvport::AVMULTI_0:
 		case UartAudioAvport::AVMULTI_1:
-			g_fxo->get<rsx_audio_data>().update_mute_state(RsxaudioPort::SERIAL, pkt->mute);
+			fxo::get<rsx_audio_data>().update_mute_state(RsxaudioPort::SERIAL, pkt->mute);
 			break;
 		case UartAudioAvport::SPDIF_0:
-			g_fxo->get<rsx_audio_data>().update_mute_state(RsxaudioPort::SPDIF_0, pkt->mute);
+			fxo::get<rsx_audio_data>().update_mute_state(RsxaudioPort::SPDIF_0, pkt->mute);
 			break;
 		case UartAudioAvport::SPDIF_1:
-			g_fxo->get<rsx_audio_data>().update_mute_state(RsxaudioPort::SPDIF_1, pkt->mute);
+			fxo::get<rsx_audio_data>().update_mute_state(RsxaudioPort::SPDIF_1, pkt->mute);
 			break;
 		default:
 			break;
@@ -1097,7 +1097,7 @@ struct audio_set_active_cmd : public ps3av_cmd
 			(pkt->audio_port & PS3AV_AUDIO_PORT_SPDIF_1) != 0U
 		};
 
-		g_fxo->get<rsx_audio_data>().update_hw_param([&](auto &obj)
+		fxo::get<rsx_audio_data>().update_hw_param([&](auto &obj)
 		{
 			for (u8 avport_idx = 0; avport_idx < SYS_RSXAUDIO_AVPORT_CNT; avport_idx++)
 			{
@@ -1149,7 +1149,7 @@ struct audio_set_inactive_cmd : public ps3av_cmd
 			return;
 		}
 
-		g_fxo->get<rsx_audio_data>().update_hw_param([&](auto &obj)
+		fxo::get<rsx_audio_data>().update_hw_param([&](auto &obj)
 		{
 			if ((pkt->audio_port & 0x8000'0000) == 0U)
 			{
@@ -1198,7 +1198,7 @@ struct audio_spdif_bit_cmd : public ps3av_cmd
 			(pkt->audio_port & PS3AV_AUDIO_PORT_SPDIF_1) != 0U
 		};
 
-		g_fxo->get<rsx_audio_data>().update_hw_param([&](auto &obj)
+		fxo::get<rsx_audio_data>().update_hw_param([&](auto &obj)
 		{
 			for (u8 avport_idx = 0; avport_idx < SYS_RSXAUDIO_AVPORT_CNT; avport_idx++)
 			{
@@ -1353,11 +1353,11 @@ struct inc_avset_cmd : public ps3av_cmd
 
 		if (vuart.hdmi_res_set[0])
 		{
-			g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true);
+			fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true);
 		}
 		if (vuart.hdmi_res_set[1])
 		{
-			g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true);
+			fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true);
 		}
 
 		bool valid_av_audio_pkt = false;
@@ -1379,7 +1379,7 @@ struct inc_avset_cmd : public ps3av_cmd
 
 				const u8 hdmi_idx = av_audio_pkt->avport == static_cast<u16>(UartAudioAvport::HDMI_1);
 
-				g_fxo->get<rsx_audio_data>().update_hw_param([&](auto &obj)
+				fxo::get<rsx_audio_data>().update_hw_param([&](auto &obj)
 				{
 					auto &hdmi = obj.hdmi[hdmi_idx];
 					hdmi.init = true;
@@ -2304,14 +2304,14 @@ void vuart_av_thread::add_unplug_event(bool hdmi_0, bool hdmi_1)
 
 	if (hdmi_0)
 	{
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true);
+		fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true);
 		hdcp_first_auth[0] = true;
 		commit_event_data(&pkt, sizeof(pkt));
 	}
 
 	if (hdmi_1)
 	{
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true);
+		fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true);
 		hdcp_first_auth[1] = true;
 		pkt.cid |= 0x10000;
 		commit_event_data(&pkt, sizeof(pkt));
@@ -2329,14 +2329,14 @@ void vuart_av_thread::add_plug_event(bool hdmi_0, bool hdmi_1)
 
 	if (hdmi_0)
 	{
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true);
+		fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true);
 		av_get_monitor_info_cmd::set_hdmi_display_cfg(*this, pkt.minfo, static_cast<u8>(UartAudioAvport::HDMI_0));
 		commit_event_data(&pkt, sizeof(pkt) - 4);
 	}
 
 	if (hdmi_1)
 	{
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true);
+		fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true);
 		memset(&pkt.minfo, 0, sizeof(pkt.minfo));
 		pkt.hdr.cid |= 0x10000;
 		av_get_monitor_info_cmd::set_hdmi_display_cfg(*this, pkt.minfo, static_cast<u8>(UartAudioAvport::HDMI_1));
@@ -2361,7 +2361,7 @@ void vuart_av_thread::add_hdcp_done_event(bool hdmi_0, bool hdmi_1)
 
 	if (hdmi_0)
 	{
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true, false);
+		fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_0, false, true, false);
 
 		if (hdcp_first_auth[0])
 		{
@@ -2381,7 +2381,7 @@ void vuart_av_thread::add_hdcp_done_event(bool hdmi_0, bool hdmi_1)
 
 	if (hdmi_1)
 	{
-		g_fxo->get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true, false);
+		fxo::get<rsx_audio_data>().update_av_mute_state(RsxaudioAvportIdx::HDMI_1, false, true, false);
 
 		if (hdcp_first_auth[1])
 		{

@@ -920,7 +920,7 @@ void pad_thread::open_home_menu()
 		return;
 	}
 
-	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+	if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 	{
 		if (m_home_menu_open.exchange(true))
 		{

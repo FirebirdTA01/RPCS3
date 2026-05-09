@@ -2798,7 +2798,7 @@ void Emulator::RunPPU()
 		FinalizeRunRequest();
 	}
 
-	if (auto thr = g_fxo->try_get<named_thread<rsx::rsx_replay_thread>>())
+	if (auto thr = fxo::try_get<named_thread<rsx::rsx_replay_thread>>())
 	{
 		thr->state -= cpu_flag::stop;
 		thr->state.notify_one();

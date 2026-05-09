@@ -20,7 +20,7 @@ namespace rsx
 		type.disable_cancel = true;
 		type.progress_bar_count = 2;
 
-		dlg = g_fxo->get<rsx::overlays::display_manager>().create<rsx::overlays::message_dialog>(true);
+		dlg = fxo::get<rsx::overlays::display_manager>().create<rsx::overlays::message_dialog>(true);
 		dlg->progress_bar_set_taskbar_index(-1);
 		dlg->show(false, msg, type, msg_dialog_source::shader_loading, [](s32 status)
 		{

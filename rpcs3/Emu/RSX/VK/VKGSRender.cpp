@@ -411,7 +411,7 @@ u64 VKGSRender::get_cycles()
 VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 {
 	// Initialize dependencies
-	g_fxo->need<rsx::dma_manager>();
+	fxo::need<rsx::dma_manager>();
 
 	if (!m_instance.create("RPCS3"))
 	{
@@ -796,7 +796,7 @@ VKGSRender::~VKGSRender()
 	}
 
 	// Flush DMA queue
-	while (!g_fxo->get<rsx::dma_manager>().sync())
+	while (!fxo::get<rsx::dma_manager>().sync())
 	{
 		do_local_task(rsx::FIFO::state::lock_wait);
 	}
@@ -914,15 +914,15 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 
 	if (result.num_flushable > 0)
 	{
-		if (g_fxo->get<rsx::dma_manager>().is_current_thread())
+		if (fxo::get<rsx::dma_manager>().is_current_thread())
 		{
 			// The offloader thread cannot handle flush requests
 			ensure(!(m_queue_status & flush_queue_state::deadlock));
 
-			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>().get_fault_range(is_writing);
+			m_offloader_fault_range = fxo::get<rsx::dma_manager>().get_fault_range(is_writing);
 			m_offloader_fault_cause = (is_writing) ? rsx::invalidation_cause::write : rsx::invalidation_cause::read;
 
-			g_fxo->get<rsx::dma_manager>().set_mem_fault_flag();
+			fxo::get<rsx::dma_manager>().set_mem_fault_flag();
 			m_queue_status |= flush_queue_state::deadlock;
 			m_eng_interrupt_mask |= rsx::backend_interrupt;
 
@@ -932,7 +932,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 				utils::pause();
 			}
 
-			g_fxo->get<rsx::dma_manager>().clear_mem_fault_flag();
+			fxo::get<rsx::dma_manager>().clear_mem_fault_flag();
 			return true;
 		}
 
@@ -2345,7 +2345,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 
 	// Workaround for deadlock occuring during RSX offloader fault
 	// TODO: Restructure command submission infrastructure to avoid this condition
-	const bool sync_success = g_fxo->get<rsx::dma_manager>().sync();
+	const bool sync_success = fxo::get<rsx::dma_manager>().sync();
 	const VkBool32 force_flush = !sync_success;
 
 	if (vk::test_status_interrupt(vk::heap_dirty))

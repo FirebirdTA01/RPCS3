@@ -929,7 +929,7 @@ namespace rsx
 			if (!g_cfg.misc.use_native_interface)
 				return;
 
-			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 			{
 				auto& perf_settings = g_cfg.video.perf_overlay;
 				auto perf_overlay = manager->get<rsx::overlays::perf_metrics_overlay>();

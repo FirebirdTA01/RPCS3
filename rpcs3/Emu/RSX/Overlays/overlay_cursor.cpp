@@ -139,7 +139,7 @@ namespace rsx
 
 		void set_cursor(u32 id, s16 x, s16 y, const color4f& color, u64 duration_us, bool force_update)
 		{
-			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 			{
 				auto cursor_overlay = manager->get<rsx::overlays::cursor_manager>();
 				if (!cursor_overlay)

@@ -351,7 +351,7 @@ error_code cellVideoOutGetGamma(u32 videoOut, vm::ptr<f32> gamma)
 		return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
 	}
 
-	const auto& conf = g_fxo->get<rsx::avconf>();
+	const auto& conf = fxo::get<rsx::avconf>();
 
 	*gamma = conf.gamma;
 
@@ -415,7 +415,7 @@ error_code cellVideoOutSetGamma(u32 videoOut, f32 gamma)
 		return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
 	}
 
-	auto& conf = g_fxo->get<rsx::avconf>();
+	auto& conf = fxo::get<rsx::avconf>();
 	conf.gamma = gamma;
 
 	return CELL_OK;

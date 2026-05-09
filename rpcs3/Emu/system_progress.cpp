@@ -71,7 +71,7 @@ void progress_dialog_server::operator()()
 			// Wait for init to complete within reasonable time. Abort just in case we have hardware/driver issues.
 			renderer->is_initialized.wait(0, atomic_wait_timeout(5 * 1000000000ull));
 
-			auto manager = g_fxo->try_get<rsx::overlays::display_manager>();
+			auto manager = fxo::try_get<rsx::overlays::display_manager>();
 
 			if (show_overlay_message)
 			{

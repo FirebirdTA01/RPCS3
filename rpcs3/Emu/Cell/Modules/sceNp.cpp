@@ -1423,7 +1423,7 @@ error_code sceNpBasicSendMessageGui(ppu_thread& ppu, vm::cptr<SceNpBasicMessageD
 
 	ppu.state += cpu_flag::wait;
 
-	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+	if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 	{
 		auto recv_dlg = manager->create<rsx::overlays::sendmessage_dialog>();
 		result = recv_dlg->Exec(msg_data, npids);
@@ -1607,7 +1607,7 @@ error_code recv_message_gui(ppu_thread& ppu, u16 mainType, u32 recvOptions)
 
 	ppu.state += cpu_flag::wait;
 
-	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+	if (auto manager = fxo::try_get<rsx::overlays::display_manager>())
 	{
 		auto recv_dlg = manager->create<rsx::overlays::recvmessage_dialog>();
 		result = recv_dlg->Exec(static_cast<SceNpBasicMessageMainType>(mainType), static_cast<SceNpBasicMessageRecvOptions>(recvOptions), recv_result, chosen_msg_id);

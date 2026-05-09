@@ -357,7 +357,7 @@ error_code sys_rsx_context_free(ppu_thread& ppu, u32 context_id)
 		return CELL_EINVAL;
 	}
 
-	g_fxo->get<rsx::vblank_thread>() = thread_state::finished;
+	fxo::get<rsx::vblank_thread>() = thread_state::finished;
 
 	const u32 queue_id = vm::_ptr<RsxDriverInfo>(render->driver_info)->handler_queue;
 

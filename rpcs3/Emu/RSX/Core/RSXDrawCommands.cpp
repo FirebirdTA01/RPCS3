@@ -554,7 +554,7 @@ namespace rsx
 				const u32 data_size = range.second * block->attribute_stride;
 				const u32 vertex_base = range.first * block->attribute_stride;
 
-				g_fxo->get<rsx::dma_manager>().copy(persistent, vm::_ptr<char>(block->real_offset_address) + vertex_base, data_size);
+				fxo::get<rsx::dma_manager>().copy(persistent, vm::_ptr<char>(block->real_offset_address) + vertex_base, data_size);
 				persistent += data_size;
 			}
 		}
