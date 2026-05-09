@@ -802,6 +802,18 @@ cpu_thread::~cpu_thread()
 cpu_thread::cpu_thread(u32 id)
 	: id(id)
 {
+	// Capture this thread's owning-process VM pointers at construction time.
+	// Load-bearing under the multi-process model: vm::g_base_addr / g_pages
+	// are GLOBALS that swap on set_active_process, but a cpu_thread's view
+	// of guest memory must remain consistent with the process that created
+	// it. memory_base_addr / page_flags are read by the slow path (memory
+	// breakpoints, debug VA resolution) and serve as the per-thread proxy
+	// for the global. The fast path (JIT-emitted code, HLE syscall thunks)
+	// still reads g_base_addr directly, which is safe only because
+	// suspend_process barriers all of a process's threads before any swap.
+	// If you remove the suspend barrier, the JIT must move to a per-thread
+	// base register (load from this struct) before the global can change
+	// while a thread executes.
 	memory_base_addr = vm::g_base_addr;
 	page_flags = vm::g_pages;
 	while (Emu.GetStatus() == system_state::paused)

@@ -5203,8 +5203,12 @@ void Emulator::destroy_process(u32 pid)
 		vm.exec_addr = nullptr;
 	}
 
-	// Mark slot as cleared (no-op for now — lv2_process is non-copyable,
-	// but the slot will be re-used via placement-new in a future create_process call)
+	// Reset all per-process state so a future create_process for this slot
+	// starts clean (clears local_fxo, the vm_handle's per-process arrays,
+	// rsx_state, strings, and bookkeeping). vm.base_addr / sudo_addr /
+	// exec_addr have already been nulled above.
+	m_processes[idx].reset();
+
 	sys_log.notice("destroy_process: slot %u cleared", idx);
 }
 

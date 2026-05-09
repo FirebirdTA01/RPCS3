@@ -1593,7 +1593,8 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 	}
 
 	// Create new PRX object
-	const auto prx = !ar && !virtual_load ? idm::make_ptr<lv2_obj, lv2_prx>() : make_shared<lv2_prx>();
+	const bool register_in_idm = !ar && !virtual_load;
+	const auto prx = register_in_idm ? idm::make_ptr<lv2_obj, lv2_prx>() : make_shared<lv2_prx>();
 
 	// Access linkage information object
 	auto& link = fxo::get<ppu_linkage_info>();

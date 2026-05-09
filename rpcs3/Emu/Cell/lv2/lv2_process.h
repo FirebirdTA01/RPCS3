@@ -43,6 +43,17 @@ class lv2_process
 public:
 	lv2_process() = default;
 
+	// Reset all per-process state to fresh-default values, so that a future
+	// create_process call can re-use the same slot index without leaking
+	// state from the destroyed process. Must only be called from
+	// Emulator::destroy_process AFTER the host VA mappings (vm.base_addr,
+	// vm.sudo_addr, vm.exec_addr) have been released and nulled, and after
+	// suspend_process has parked all threads belonging to this slot.
+	// Currently dormant — destroyed slots are not re-created in the
+	// debug-only multi-process API — but lands the teardown so the future
+	// (III) milestone can re-use slots without surprise.
+	void reset();
+
 	// --- m_state ---
 	system_state GetState() const { return m_state; }
 	atomic_t<system_state>& RefState() { return m_state; }

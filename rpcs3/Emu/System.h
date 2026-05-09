@@ -124,10 +124,23 @@ class Emulator final
 
 
 	std::array<lv2_process, 2> m_processes;
+
+	// TODO: promote to atomic_t<u32>. Written by set_active_process under
+	// m_vm_swap_mutex (unique_lock) and read by current_process() from
+	// many threads without any lock — formally a data race per the C++
+	// memory model. Benign on x86 (a u32 word load is atomic in practice)
+	// but UB and not portable to weakly-ordered architectures.
 	u32 m_active_process_index = 0;
 
-	// VM swap mutex — held by set_active_process during pointer switch;
-	// system threads that read guest memory must take a shared_lock.
+	// VM swap mutex — held by set_active_process during pointer switch.
+	// TODO: this is currently dead code. The original intent was that
+	// system threads reading guest memory would take a shared_lock and
+	// thus serialize against the swap, but no such callers exist. Cross-
+	// process safety is presently provided entirely by suspend_process
+	// (PPU/SPU thread park barrier) plus rsx::thread::pause(). Either
+	// audit and add shared_lock callers to non-RSX system threads, or
+	// delete this mutex when the multi-process model moves off the
+	// global swap (cf. (III) target architecture).
 	mutable std::shared_mutex m_vm_swap_mutex;
 
 	bool m_co_resident_load = false;

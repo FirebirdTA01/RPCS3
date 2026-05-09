@@ -186,6 +186,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/SPULLVMRecompiler.cpp
     Cell/SPUThread.cpp
     Cell/lv2/lv2.cpp
+    Cell/lv2/lv2_process.cpp
     Cell/lv2/sys_bdemu.cpp
     Cell/lv2/sys_btsetting.cpp
     Cell/lv2/sys_cond.cpp
