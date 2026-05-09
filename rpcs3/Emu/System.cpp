@@ -2761,7 +2761,12 @@ void Emulator::RunPPU()
 
 	bool signalled_thread = false;
 
-	// Run main thread
+	// Run main thread. RunPPU may be invoked more than once per Starting
+	// transition because two paths fire it: Emulator::Run() (when rsx is
+	// initialized) and rsx::thread's run loop (when Emu.IsStarting()). For
+	// a fresh boot both paths can race, and the second arrival finds stop
+	// already cleared. Guard the per-thread work on test_and_reset so the
+	// second call is a no-op rather than failing an assertion.
 	idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& cpu)
 	{
 		if (std::exchange(cpu.stop_flag_removal_protection, false))
@@ -2769,7 +2774,10 @@ void Emulator::RunPPU()
 			return;
 		}
 
-		ensure(cpu.state.test_and_reset(cpu_flag::stop));
+		if (!cpu.state.test_and_reset(cpu_flag::stop))
+		{
+			return;
+		}
 
 		// Clear cpu_flag::suspend set by the ppu_thread ctor as a "trigger the
 		// scheduler" marker. For a launched-process main_thread there is no
