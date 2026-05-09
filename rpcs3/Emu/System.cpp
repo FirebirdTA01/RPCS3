@@ -2770,6 +2770,16 @@ void Emulator::RunPPU()
 		}
 
 		ensure(cpu.state.test_and_reset(cpu_flag::stop));
+
+		// Clear cpu_flag::suspend set by the ppu_thread ctor as a "trigger the
+		// scheduler" marker. For a launched-process main_thread there is no
+		// awake/g_ppu insertion path until the thread itself sleeps once, so
+		// the LV2 scheduler never reaches it via schedule_all and suspend
+		// stays set forever — parking the thread in cpu_wait at the first
+		// state check inside exec_task. Clearing it here lets the freshly
+		// stop-cleared thread run immediately.
+		cpu.state -= cpu_flag::suspend;
+
 		cpu.state.notify_one();
 		signalled_thread = true;
 	});
