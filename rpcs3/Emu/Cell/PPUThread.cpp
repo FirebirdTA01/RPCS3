@@ -5456,12 +5456,20 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 	const bool is_first = !jit_mod.init;
 
-	if (is_first)
+	// Finalize JIT memory: marks LLVM-emitted code pages PROT_EXEC. fin() is
+	// idempotent on already-finalized pages, so removing the previous
+	// is_first guard keeps the code path uniform without depending on the
+	// guard being load-bearing. The jit_module cache key is cache_path +
+	// segs[0].ptr (a host pointer derived from the active process's
+	// g_base_addr at load time), so under co-resident load each process
+	// gets a fresh jit_module entry on its first compile of a given module
+	// — meaning is_first was already true in practice. TODO: characterize
+	// whether any path can legitimately re-enter ppu_initialize for the
+	// same cache key within a single process, in which case the previous
+	// guard had a real effect we have not yet reproduced.
+	for (auto& jit : jits)
 	{
-		for (auto& jit : jits)
-		{
-			jit->fin();
-		}
+		jit->fin();
 	}
 
 #ifdef __APPLE__
