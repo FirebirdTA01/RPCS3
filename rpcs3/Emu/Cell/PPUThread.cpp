@@ -219,9 +219,10 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	// Save native stack pointer for longjmp emulation
 	c.mov(x86::qword_ptr(args[0], ::offset32(&ppu_thread::hv_ctx, &rpcs3::hypervisor_context_t::regs)), x86::rsp);
 
-	// Initialize args
-	c.movabs(x86::r13, reinterpret_cast<u64>(&vm::g_exec_addr));
-	c.mov(x86::r13, x86::qword_ptr(x86::r13));
+	// Initialize args. r13 = REG_Base = exec/dispatch table for this
+	// thread's owning process; loaded from per-thread cache so
+	// concurrent execution across processes is safe.
+	c.mov(x86::r13, x86::qword_ptr(args[0], ::offset32(&ppu_thread::exec_base_addr)));
 	c.mov(x86::rbp, args[0]);
 	c.mov(x86::edx, x86::dword_ptr(x86::rbp, ::offset32(&ppu_thread::cia))); // Load PC
 
@@ -325,9 +326,9 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	c.stp(a64::x28, a64::x29, arm::Mem(a64::x14, 96));
 	c.str(a64::x30, arm::Mem(a64::x14, 112));
 
-	// Load REG_Base - use absolute jump target to bypass rel jmp range limits
-	c.mov(a64::x19, Imm(reinterpret_cast<u64>(&vm::g_exec_addr)));
-	c.ldr(a64::x19, arm::Mem(a64::x19));
+	// Load REG_Base from per-thread cpu_thread::exec_base_addr cache.
+	static_assert(::offset32(&ppu_thread::exec_base_addr) < 32760, "exec_base_addr offset too large for ARM64 LDR immediate");
+	c.ldr(a64::x19, arm::Mem(args[0], ::offset32(&ppu_thread::exec_base_addr)));
 	// Load PPUThread struct base -> REG_Sp
 	const arm::GpX ppu_t_base = a64::x20;
 	c.mov(ppu_t_base, args[0]);
@@ -1040,41 +1041,37 @@ struct ppu_far_jumps_t
 
 		if (!it->second.func)
 		{
-			// Trampoline loads the active process's vm::g_base_addr at runtime
-			// rather than baking it in at build time. ppu_far_jumps_t is
-			// per-process so any single trampoline only ever runs under the
-			// process that built it, but the runtime load also makes the
-			// trampoline correct if a future change shares them.
+			// Trampoline reads memory_base_addr from the running ppu_thread
+			// (rbp on x64, x20 on ARM64 under the JIT GHC convention) so the
+			// resulting host pointer is the owner-process's base regardless of
+			// which process is currently active globally.
 			it->second.func = build_function_asm<ppu_intrp_func_t>("", [&](native_asm& c, auto& args)
 			{
 				using namespace asmjit;
 
 #ifdef ARCH_X64
-				c.mov(args[0], x86::rbp);
-				// args[2] = vm::g_base_addr + pc, computed at call time.
-				c.movabs(x86::rax, reinterpret_cast<u64>(&vm::g_base_addr));
-				c.mov(args[2], x86::qword_ptr(x86::rax));
+				// args[2] = per-thread memory_base_addr + pc. rbp = ppu_thread*.
+				c.mov(args[2], x86::qword_ptr(x86::rbp, ::offset32(&ppu_thread::memory_base_addr)));
 				if (pc) c.add(args[2], pc);
+				c.mov(args[0], x86::rbp);
 				c.jmp(ppu_far_jump);
 #else
-				Label jmp_address = c.newLabel();
-				Label base_addr_global = c.newLabel();
+				static_assert(::offset32(&ppu_thread::memory_base_addr) < 32760, "memory_base_addr offset too large for ARM64 LDR immediate");
 
-				// Load &vm::g_base_addr, then deref, then add pc.
-				c.ldr(args[1], arm::ptr(base_addr_global));
-				c.ldr(args[2], arm::Mem(args[1]));
+				// args[2] = per-thread memory_base_addr + pc. x20 = ppu_thread*.
+				c.ldr(args[2], arm::Mem(a64::x20, ::offset32(&ppu_thread::memory_base_addr)));
 				if (pc)
 				{
 					c.add(args[2], args[2], Imm(pc));
 				}
+
+				Label jmp_address = c.newLabel();
 				c.ldr(args[1], arm::ptr(jmp_address));
 				c.br(args[1]);
 
 				c.align(AlignMode::kCode, 16);
 				c.bind(jmp_address);
 				c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
-				c.bind(base_addr_global);
-				c.embedUInt64(reinterpret_cast<u64>(&vm::g_base_addr));
 #endif
 			}, &rt);
 		}
@@ -2416,8 +2413,9 @@ void ppu_thread::exec_task()
 		return;
 	}
 
-	const auto cache = vm::g_exec_addr;
-	const auto mem_ = vm::g_base_addr;
+	// Per-thread caches so the static interpreter sees this thread's VM.
+	const auto cache = exec_base_addr;
+	const auto mem_ = memory_base_addr;
 
 	while (true)
 	{
@@ -4862,8 +4860,8 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			code_size_until_jump = buf_end - buf_start;
 
 			c.add(x86::edx, seg0);
-			c.movabs(x86::rax, reinterpret_cast<u64>(&vm::g_exec_addr));
-			c.mov(x86::rax, x86::qword_ptr(x86::rax));
+			// Load this thread's exec base from the ppu_thread (rbp), not the global.
+			c.mov(x86::rax, x86::qword_ptr(x86::rbp, ::offset32(&ppu_thread::exec_base_addr)));
 			c.mov(x86::dword_ptr(x86::rbp, ::offset32(&ppu_thread::cia)), x86::edx);
 
 			c.mov(x86::rcx, x86::qword_ptr(x86::rax, x86::rdx, 1, 0)); // Load call target
@@ -4876,7 +4874,8 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			c.jmp(x86::rcx);
 #else
 			// Load REG_Base - use absolute jump target to bypass rel jmp range limits
-			// X19 contains vm::g_exec_addr
+			// X19 contains the per-thread cpu_thread::exec_base_addr cache,
+			// loaded by ppu_gateway from this thread's struct.
 			const arm::GpX exec_addr = a64::x19;
 
 			// X20 contains ppu_thread*
