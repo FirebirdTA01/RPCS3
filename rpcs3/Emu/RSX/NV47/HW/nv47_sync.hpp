@@ -36,7 +36,7 @@ namespace rsx
 					if constexpr (FlushDMA)
 					{
 						// If the backend handled the request, this call will basically be a NOP
-						g_fxo->get<rsx::dma_manager>().sync();
+						fxo::get<rsx::dma_manager>().sync();
 					}
 
 					if constexpr (FlushPipe)

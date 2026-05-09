@@ -299,7 +299,7 @@ namespace rsx
 				if (!m_stop_input_loop)
 				{
 					const auto notify = std::make_shared<atomic_t<u32>>(0);
-					auto& overlayman = g_fxo->get<display_manager>();
+					auto& overlayman = fxo::get<display_manager>();
 
 					if (interactive)
 					{
@@ -323,7 +323,7 @@ namespace rsx
 									// Only update the screen at about 60fps since updating it everytime slows down the process
 									std::this_thread::sleep_for(16ms);
 
-									if (!g_fxo->is_init<display_manager>())
+									if (!fxo::is_init<display_manager>())
 									{
 										rsx_log.fatal("display_manager was improperly destroyed");
 										break;

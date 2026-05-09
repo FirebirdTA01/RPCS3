@@ -251,7 +251,7 @@ namespace rsx
 			visible = true;
 
 			const auto notify = std::make_shared<atomic_t<u32>>(0);
-			auto& overlayman = g_fxo->get<display_manager>();
+			auto& overlayman = fxo::get<display_manager>();
 			auto& nps = g_fxo->get<np_state>();
 
 			// Block until the user exits the dialog

@@ -223,7 +223,7 @@ namespace rsx
 
 		s32 media_list_dialog::show(std::shared_ptr<media_entry> root, media_entry& result, const std::string& title, u32 focused, bool enable_overlay)
 		{
-			auto ref = g_fxo->get<display_manager>().get(uid);
+			auto ref = fxo::get<display_manager>().get(uid);
 
 			m_media = root;
 			result = {};

@@ -511,7 +511,7 @@ namespace rsx
 			}
 
 			// NOTE: Object removal should be the last step
-			if (auto& manager = g_fxo->get<display_manager>(); g_fxo->is_init<display_manager>())
+			if (auto& manager = fxo::get<display_manager>(); fxo::is_init<display_manager>())
 			{
 				manager.remove(uid);
 			}
