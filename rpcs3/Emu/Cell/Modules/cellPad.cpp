@@ -365,6 +365,32 @@ void pad_get_data(u32 port_no, CellPadData* data, bool get_periph_data = false)
 		return;
 	}
 
+	// Foreground-input gate: only the input-foreground process sees real pad
+	// data. Backgrounded processes get a neutral frame (cleared buttons, centered
+	// analog sticks). Avoids stuck-button artifacts on foreground transitions.
+	if (Emu.current_process().pid() != Emu.GetInputForegroundPid())
+	{
+		const u32 setting = config.port_setting[port_no];
+		*data = {};
+		data->len = (setting & CELL_PAD_SETTING_SENSOR_ON) ? CELL_PAD_LEN_CHANGE_SENSOR_ON :
+		            (setting & CELL_PAD_SETTING_PRESS_ON)  ? CELL_PAD_LEN_CHANGE_PRESS_ON :
+		                                                      CELL_PAD_LEN_CHANGE_DEFAULT;
+		data->button[0] = 0x0;
+		data->button[1] = static_cast<u16>((0x7 << 4) | std::min<u32>(data->len / 2, 15));
+		data->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X]  = 128;
+		data->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y]  = 128;
+		data->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X] = 128;
+		data->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] = 128;
+		if (data->len >= CELL_PAD_LEN_CHANGE_SENSOR_ON)
+		{
+			data->button[CELL_PAD_BTN_OFFSET_SENSOR_X] = DEFAULT_MOTION_X;
+			data->button[CELL_PAD_BTN_OFFSET_SENSOR_Y] = DEFAULT_MOTION_Y;
+			data->button[CELL_PAD_BTN_OFFSET_SENSOR_Z] = DEFAULT_MOTION_Z;
+			data->button[CELL_PAD_BTN_OFFSET_SENSOR_G] = DEFAULT_MOTION_G;
+		}
+		return;
+	}
+
 	const u32 setting = config.port_setting[port_no];
 	bool btnChanged = false;
 

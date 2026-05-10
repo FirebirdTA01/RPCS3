@@ -5050,6 +5050,7 @@ void Emulator::set_active_process(u32 pid)
 	vm::g_locations       = &m_processes[idx].vm_handle().locations;
 
 	m_active_process_index = idx;
+	m_input_foreground_pid = pid;
 
 	if (auto* in_rsx = m_processes[idx].local_fxo().try_get<rsx::thread>())
 	{

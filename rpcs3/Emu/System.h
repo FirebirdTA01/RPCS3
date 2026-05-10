@@ -132,6 +132,10 @@ class Emulator final
 	// but UB and not portable to weakly-ordered architectures.
 	u32 m_active_process_index = 0;
 
+	// Input-foreground process pid. Tracks set_active_process today; later
+	// pieces add independent updates for PS-button-driven VSH XMB routing.
+	atomic_t<u32> m_input_foreground_pid{1};
+
 	// VM swap mutex — held by set_active_process during pointer switch.
 	// TODO: this is currently dead code. The original intent was that
 	// system threads reading guest memory would take a shared_lock and
@@ -246,6 +250,8 @@ public:
 	// Multi-process API (debug-only — not yet exposed via PS3 syscalls)
 	u32 create_process();
 	void set_active_process(u32 pid);
+	u32 GetInputForegroundPid() const { return m_input_foreground_pid; }
+	void SetInputForegroundPid(u32 pid) { m_input_foreground_pid = pid; }
 	void suspend_process(u32 pid);
 	void resume_process(u32 pid);
 	void destroy_process(u32 pid);
