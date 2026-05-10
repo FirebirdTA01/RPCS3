@@ -698,6 +698,7 @@ namespace rsx
 	thread::thread(utils::serial* _ar)
 		: cpu_thread(0x5555'5555)
 	{
+		owner_pid = Emu.current_process().pid();
 		m_rsx_state = &Emu.current_process().rsx_ctx();
 		bind_rsx_state_pointers(m_rsx_state);
 
@@ -998,7 +999,7 @@ namespace rsx
 		}
 
 		// Wait for startup (TODO)
-		while (!rsx_thread_running || Emu.IsPausedOrReady())
+		while (!rsx_thread_running || Emu.IsProcessPausedOrReady(owner_pid))
 		{
 			// Execute backend-local tasks first
 			do_local_task(performance_counters.state);

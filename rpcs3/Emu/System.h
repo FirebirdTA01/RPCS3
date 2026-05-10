@@ -452,6 +452,15 @@ public:
 	bool IsRunning() const { return m_processes[m_active_process_index].GetState() == system_state::running; }
 	bool IsPaused() const { system_state state = m_processes[m_active_process_index].GetState(); return state >= system_state::paused && state <= system_state::frozen; }
 	bool IsPausedOrReady() const { return m_processes[m_active_process_index].GetState() >= system_state::paused; }
+	bool IsProcessPausedOrReady(u32 pid) const
+	{
+		const u32 idx = pid - 1;
+		if (idx >= m_processes.size())
+		{
+			return false;
+		}
+		return m_processes[idx].GetState() >= system_state::paused;
+	}
 	bool IsStopped(bool test_fully = false) const { return test_fully ? m_processes[m_active_process_index].GetState() == system_state::stopped : m_processes[m_active_process_index].GetState() <= system_state::stopping; }
 	bool IsReady()   const { return m_processes[m_active_process_index].GetState() == system_state::ready; }
 	bool IsStarting() const { return m_processes[m_active_process_index].GetState() == system_state::starting; }
