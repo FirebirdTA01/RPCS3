@@ -654,14 +654,19 @@ void pad_thread::operator()()
 			}
 		}
 
-		// Handle home menu if requested. Check active process per iteration:
-		// under co-resident execution, IsVsh() reads global state that gets
-		// restored to VSH info after a game's ppu_load_exec returns, so a
-		// latched boolean from pad_thread startup would lock out the intercept
-		// once the game is running. IsActiveProcessVsh() reads the active
-		// process slot's is_vsh capture which BootGame sets correctly per
-		// process.
-		if (!Emu.IsActiveProcessVsh() && !m_home_menu_open && Emu.IsRunning())
+		// Home-menu intercept gate. Three cases:
+		//   1) !vsh_coresident                       -> host RPCS3 overlay (direct-launch).
+		//   2) vsh_coresident &&  active_is_vsh      -> no host intercept (VSH owns its native XMB).
+		//   3) vsh_coresident && !active_is_vsh      -> route to VSH XMB. Currently falls back to
+		//      host overlay; replaced when foreground routing lands.
+		const bool vsh_coresident = Emu.IsVshCoResident();
+		const bool active_is_vsh  = Emu.IsActiveProcessVsh();
+		bool use_host_overlay;
+		if (!vsh_coresident)      use_host_overlay = true;   // case 1
+		else if (active_is_vsh)   use_host_overlay = false;  // case 2
+		else                      use_host_overlay = true;   // case 3 (fall-back until VSH routing lands)
+
+		if (use_host_overlay && !m_home_menu_open && Emu.IsRunning())
 		{
 			bool ps_button_pressed = false;
 

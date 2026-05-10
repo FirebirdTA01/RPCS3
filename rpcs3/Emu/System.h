@@ -498,6 +498,14 @@ public:
 
 	static bool IsVsh();
 	bool IsActiveProcessVsh() const { return m_processes[m_active_process_index].is_vsh(); }
+
+	bool IsVshCoResident() const
+	{
+		const lv2_process& slot0 = m_processes[0];
+		if (!slot0.is_vsh()) return false;
+		return slot0.GetState() > system_state::stopping;
+	}
+
 	static bool IsValidSfb(const std::string& path);
 
 	static void SaveSettings(const std::string& settings, const std::string& title_id);
