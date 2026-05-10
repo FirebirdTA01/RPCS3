@@ -5005,101 +5005,38 @@ void Emulator::set_active_process(u32 pid)
 	// Suspend outgoing process's PPU/SPU threads (they must stop before pointers change)
 	suspend_process(m_active_process_index + 1);
 
-	// RSX state swap. Order matters: any system thread (vblank etc.) that reads
-	// guest memory through rsx::thread fields can fire between steps. To keep
-	// every interleaving safe we (1) save outgoing state while g_base_addr still
-	// matches it, (2) zero out the rsx::thread fields so subsequent reads hit
-	// the early-return guards in sys_rsx_*, (3) swap g_base_addr/g_pages, then
-	// (4) load incoming state. Vblank reading at any point sees either matching
-	// (base_addr, fields) or a zeroed driver_info that the guards catch.
-	if (auto rsx = fxo::try_get<rsx::thread>())
+	// RSX pause/unpause is per-process. Each rsx::thread is constructed
+	// with m_rsx_state pointing to its own process's rsx_ctx and its
+	// fifo_ctrl bound to its own ctrl at init, so no in-place state
+	// shuffle is needed across set_active_process. Pause the outgoing
+	// thread before the VM swap, then unpause the incoming one after.
+	if (auto* out_rsx = m_processes[m_active_process_index].local_fxo().try_get<rsx::thread>())
 	{
-		// rsx->pause() blocks until rsx::thread acks via its own wait_pause poll
-		// (do NOT call wait_pause from this thread — it spins until unpause and deadlocks).
-		rsx->pause();
-
-		// 1. Save outgoing process's RSX state (still under outgoing g_base_addr)
-		auto& out = m_processes[m_active_process_index].rsx_ctx();
-		out.dma_address = rsx->dma_address;
-		out.driver_info = rsx->driver_info;
-		out.device_addr = rsx->device_addr;
-		out.label_addr = rsx->label_addr;
-		out.main_mem_size = rsx->main_mem_size;
-		out.local_mem_size = rsx->local_mem_size;
-		out.rsx_event_port = rsx->rsx_event_port;
-
-		// 2. Zero rsx::thread fields so any read that sneaks in before step 4
-		//    hits the !dma_address / !driver_info guards in sys_rsx_*.
-		rsx->dma_address = 0;
-		rsx->driver_info = 0;
-		rsx->ctrl = nullptr;
-
-		// 3. Swap base/sudo/exec/pages in lockstep with the rsx_state pointer
-		vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
-		vm::g_sudo_addr = m_processes[idx].vm_handle().sudo_addr;
-		vm::g_exec_addr = m_processes[idx].vm_handle().exec_addr;
-		vm::g_pages     = m_processes[idx].vm_handle().page_flags.data();
-		vm::g_reservations    = m_processes[idx].vm_handle().reservations;
-		vm::g_shmem           = m_processes[idx].vm_handle().shmem;
-		vm::g_range_lock_set  = m_processes[idx].vm_handle().range_lock_set;
-		vm::g_range_lock_bits = m_processes[idx].vm_handle().range_lock_bits;
-		vm::g_locations       = &m_processes[idx].vm_handle().locations;
-		rsx->m_rsx_state = &m_processes[idx].rsx_ctx();
-
-		// 4. Load incoming process's RSX state from its lv2_process slot
-		auto& in = m_processes[idx].rsx_ctx();
-
-		// rsx_context_state stores BOTH per-process FIFO/DMA values (saved/restored
-		// on swap) AND constant pointers into the rsx::thread instance for the
-		// framebuffer / graphics state structs (always rebound to the live thread).
-		// The ctor binds these pointers for the first process only — every
-		// subsequent process needs them rebound here so reads through m_rsx_state->
-		// don't dereference null. (The 0x44-offset RSX segfault on launch was a
-		// read of m_rsx_state->m_framebuffer_layout->X under a null pointer.)
-		rsx->bind_rsx_state_pointers(&in);
-
-		const u32 out_dma = m_processes[m_active_process_index].rsx_ctx().dma_address;
-		const u32 in_dma  = in.dma_address;
-
-		rsx->dma_address = in.dma_address;
-		rsx->driver_info = in.driver_info;
-		rsx->device_addr = in.device_addr;
-		rsx->label_addr = in.label_addr;
-		rsx->main_mem_size = in.main_mem_size;
-		rsx->local_mem_size = in.local_mem_size;
-		rsx->rsx_event_port = in.rsx_event_port;
-		rsx->ctrl = in.dma_address ? vm::_ptr<RsxDmaControl>(in.dma_address) : nullptr;
-
-		sys_log.notice("set_active_process: RSX swap out_dma=0x%x in_dma=0x%x ctrl=%p",
-			out_dma, in_dma, static_cast<void*>(rsx->ctrl));
-
-		// FIFO_control caches the RsxDmaControl pointer at construction; refresh it
-		// now so the FIFO loop reads the active process's DMA control. Without this
-		// the loop dereferences VSH's old pointer (which may be unmapped or point
-		// into the wrong process's VM after the swap) and segfaults at the offset
-		// of the get/put fields (0x44 / 0x40).
-		if (rsx->fifo_ctrl)
-		{
-			rsx->fifo_ctrl->rebind_ctrl();
-		}
-
-		rsx->unpause();
+		// out_rsx->pause() blocks until the rsx::thread acks via its own
+		// wait_pause poll. Do NOT call wait_pause from this thread — it
+		// spins until unpause and deadlocks.
+		out_rsx->pause();
 	}
-	else
-	{
-		// No RSX thread (headless / pre-init): just swap the VM pointers.
-		vm::g_base_addr = m_processes[idx].vm_handle().base_addr;
-		vm::g_sudo_addr = m_processes[idx].vm_handle().sudo_addr;
-		vm::g_exec_addr = m_processes[idx].vm_handle().exec_addr;
-		vm::g_pages     = m_processes[idx].vm_handle().page_flags.data();
-		vm::g_reservations    = m_processes[idx].vm_handle().reservations;
-		vm::g_shmem           = m_processes[idx].vm_handle().shmem;
-		vm::g_range_lock_set  = m_processes[idx].vm_handle().range_lock_set;
-		vm::g_range_lock_bits = m_processes[idx].vm_handle().range_lock_bits;
-		vm::g_locations       = &m_processes[idx].vm_handle().locations;
-	}
+
+	// Swap VM globals. Non-RSX system threads that read vm::g_* without
+	// taking m_vm_swap_mutex still race the swap; that limitation is
+	// tracked for the suspend_process dismantle work.
+	vm::g_base_addr       = m_processes[idx].vm_handle().base_addr;
+	vm::g_sudo_addr       = m_processes[idx].vm_handle().sudo_addr;
+	vm::g_exec_addr       = m_processes[idx].vm_handle().exec_addr;
+	vm::g_pages           = m_processes[idx].vm_handle().page_flags.data();
+	vm::g_reservations    = m_processes[idx].vm_handle().reservations;
+	vm::g_shmem           = m_processes[idx].vm_handle().shmem;
+	vm::g_range_lock_set  = m_processes[idx].vm_handle().range_lock_set;
+	vm::g_range_lock_bits = m_processes[idx].vm_handle().range_lock_bits;
+	vm::g_locations       = &m_processes[idx].vm_handle().locations;
 
 	m_active_process_index = idx;
+
+	if (auto* in_rsx = m_processes[idx].local_fxo().try_get<rsx::thread>())
+	{
+		in_rsx->unpause();
+	}
 
 	// Resume incoming process's PPU/SPU threads (now running with correct memory)
 	resume_process(pid);

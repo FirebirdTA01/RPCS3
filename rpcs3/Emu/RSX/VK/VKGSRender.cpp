@@ -11,6 +11,7 @@
 #include "VKHelpers.h"
 #include "VKRenderPass.h"
 #include "VKResourceManager.h"
+#include "vk_host_context.h"
 
 #include "vkutils/buffer_object.h"
 #include "vkutils/scratch.h"
@@ -413,75 +414,22 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 	// Initialize dependencies
 	fxo::need<rsx::dma_manager>();
 
-	if (!m_instance.create("RPCS3"))
+	auto& host = g_fxo->get<vk::host_context>();
+	if (!host.initialize(m_frame))
 	{
-		rsx_log.fatal("Could not find a Vulkan compatible GPU driver. Your GPU(s) may not support Vulkan, or you need to install the Vulkan runtime and drivers");
 		m_device = VK_NULL_HANDLE;
+		rsx_log.fatal("Could not initialize Vulkan host context (no compatible GPU, no Vulkan runtime, or swapchain init failed)");
 		return;
 	}
-
-	m_instance.bind();
-
-	std::vector<vk::physical_device>& gpus = m_instance.enumerate_devices();
-
-	// Actually confirm  that the loader found at least one compatible device
-	// This should not happen unless something is wrong with the driver setup on the target system
-	if (gpus.empty())
-	{
-		//We can't throw in Emulator::Load, so we show error and return
-		rsx_log.fatal("No compatible GPU devices found");
-		m_device = VK_NULL_HANDLE;
-		return;
-	}
-
-	bool gpu_found = false;
-	std::string adapter_name = g_cfg.video.vk.adapter;
-
-	display_handle_t display = m_frame->handle();
-
-#ifdef HAVE_X11
-	std::visit([this](auto&& p) {
-		using T = std::decay_t<decltype(p)>;
-		if constexpr (std::is_same_v<T, std::pair<Display*, Window>>)
-		{
-			m_display_handle = p.first; XFlush(m_display_handle);
-		}
-	}, display);
-#endif
-
-	for (auto &gpu : gpus)
-	{
-		if (gpu.get_name() == adapter_name)
-		{
-			m_swapchain.reset(m_instance.create_swapchain(display, gpu));
-			gpu_found = true;
-			break;
-		}
-	}
-
-	if (!gpu_found || adapter_name.empty())
-	{
-		m_swapchain.reset(m_instance.create_swapchain(display, gpus[0]));
-	}
-
+	m_swapchain = host.swapchain();
 	if (!m_swapchain)
 	{
 		m_device = VK_NULL_HANDLE;
-		rsx_log.fatal("Could not successfully initialize a swapchain");
 		return;
 	}
-
 	m_device = const_cast<vk::render_device*>(&m_swapchain->get_device());
-	vk::set_current_renderer(m_swapchain->get_device());
-	vk::init();
-
-	m_swapchain_dims.width = m_frame->client_width();
+	m_swapchain_dims.width  = m_frame->client_width();
 	m_swapchain_dims.height = m_frame->client_height();
-
-	if (!m_swapchain->init(m_swapchain_dims.width, m_swapchain_dims.height))
-	{
-		swapchain_unavailable = true;
-	}
 
 	// create command buffer...
 	m_command_buffer_pool.create((*m_device), m_device->get_graphics_queue_family());
@@ -877,18 +825,6 @@ VKGSRender::~VKGSRender()
 
 	// Descriptors
 	vk::descriptors::flush();
-
-	// Global resources
-	vk::destroy_global_resources();
-
-	// Device handles/contexts
-	m_swapchain->destroy();
-	m_instance.destroy();
-
-#if defined(HAVE_X11) && defined(HAVE_VULKAN)
-	if (m_display_handle)
-		XCloseDisplay(m_display_handle);
-#endif
 }
 
 bool VKGSRender::on_access_violation(u32 address, bool is_writing)

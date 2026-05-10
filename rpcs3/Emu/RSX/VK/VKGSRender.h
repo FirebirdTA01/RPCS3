@@ -94,8 +94,7 @@ public:
 private:
 	std::unique_ptr<vk::program_cache> m_prog_buffer;
 
-	std::unique_ptr<vk::swapchain_base> m_swapchain;
-	vk::instance m_instance;
+	vk::swapchain_base* m_swapchain = nullptr;
 	vk::render_device *m_device;
 
 	//Vulkan internals
@@ -201,10 +200,6 @@ private:
 
 	vk::shader_interpreter m_shader_interpreter;
 	u32 m_interpreter_state;
-
-#if defined(HAVE_X11) && defined(HAVE_VULKAN)
-	Display *m_display_handle = nullptr;
-#endif
 
 public:
 	u64 get_cycles() final;

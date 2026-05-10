@@ -1081,7 +1081,17 @@ namespace rsx
 							vblank_period = 1'000'000 + u64{g_cfg.video.vblank_ntsc.get()} * 1000;
 						}
 
-						post_vblank_event(post_event_time);
+						// Skip events while the owning rsx::thread is paused
+						// (set_active_process pauses the outgoing rsx::thread;
+						// firing an event during that window would route through
+						// the syscall's get_current_renderer to the INCOMING
+						// process's local_fxo, which may not yet have its
+						// rsx::thread and would deref a null pointer in
+						// sys_rsx_context_attribute).
+						if (!external_interrupt_lock)
+						{
+							post_vblank_event(post_event_time);
+						}
 					}
 				}
 				else if (wait_sleep)

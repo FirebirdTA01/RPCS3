@@ -634,6 +634,7 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/VKFramebuffer.cpp
         RSX/VK/VKGSRender.cpp
         RSX/VK/VKHelpers.cpp
+        RSX/VK/vk_host_context.cpp
         RSX/VK/VKMemAlloc.cpp
         RSX/VK/VKOverlays.cpp
         RSX/VK/VKPipelineCompiler.cpp
