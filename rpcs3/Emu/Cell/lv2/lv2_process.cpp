@@ -62,4 +62,5 @@ void lv2_process::reset()
 	m_pause_amend_time = 0;
 	m_state = system_state::stopped;
 	m_pid = 1;
+	m_is_vsh = false;
 }

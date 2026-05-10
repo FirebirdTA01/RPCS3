@@ -497,6 +497,7 @@ public:
 	friend void init_fxo_for_exec(utils::serial*, bool);
 
 	static bool IsVsh();
+	bool IsActiveProcessVsh() const { return m_processes[m_active_process_index].is_vsh(); }
 	static bool IsValidSfb(const std::string& path);
 
 	static void SaveSettings(const std::string& settings, const std::string& title_id);

@@ -62,6 +62,8 @@ public:
 
 	u32 pid() const { return m_pid; }
 	void set_pid(u32 pid) { m_pid = pid; }
+	bool is_vsh() const { return m_is_vsh; }
+	void set_is_vsh(bool v) { m_is_vsh = v; }
 
 	stx::manual_typemap<lv2_process, 0x20'00000, 128>& local_fxo() { return m_local_fxo; }
 	const stx::manual_typemap<lv2_process, 0x20'00000, 128>& local_fxo() const { return m_local_fxo; }
@@ -251,6 +253,7 @@ private:
 	atomic_t<u64> m_pause_amend_time{0};
 	atomic_t<system_state> m_state{system_state::stopped};
 	u32 m_pid = 1;
+	bool m_is_vsh = false;
 	stx::manual_typemap<lv2_process, 0x20'00000, 128> m_local_fxo;
 	ppu_jit_memory_pool m_jit_pool;
 	vm::vm_handle vm;

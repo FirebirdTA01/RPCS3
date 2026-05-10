@@ -2403,6 +2403,16 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			g_ps3_process_info.self_info.valid = false;
 		}
 
+		// Capture per-process VSH-ness for the slot being booted. The global
+		// g_ps3_process_info gets save/restored around ppu_load_exec, so
+		// later queries against the global cannot tell which process is
+		// currently active. Mirror the IsVsh() predicate logic into the
+		// active process slot so per-process callers (pad_thread for PS-button
+		// intercept, and any future site) get a stable answer.
+		m_processes[m_active_process_index].set_is_vsh(
+			g_ps3_process_info.self_info.valid &&
+			(g_ps3_process_info.self_info.prog_id_hdr.program_authority_id >> 36 == 0x1070000));
+
 		if (!elf_file)
 		{
 			sys_log.error("Failed to decrypt SELF: %s", elf_path);

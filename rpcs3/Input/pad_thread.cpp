@@ -431,8 +431,6 @@ void pad_thread::operator()()
 {
 	Init();
 
-	const bool is_vsh = Emu.IsVsh();
-
 	pad::g_reset = false;
 	pad::g_started = true;
 
@@ -656,8 +654,14 @@ void pad_thread::operator()()
 			}
 		}
 
-		// Handle home menu if requested
-		if (!is_vsh && !m_home_menu_open && Emu.IsRunning())
+		// Handle home menu if requested. Check active process per iteration:
+		// under co-resident execution, IsVsh() reads global state that gets
+		// restored to VSH info after a game's ppu_load_exec returns, so a
+		// latched boolean from pad_thread startup would lock out the intercept
+		// once the game is running. IsActiveProcessVsh() reads the active
+		// process slot's is_vsh capture which BootGame sets correctly per
+		// process.
+		if (!Emu.IsActiveProcessVsh() && !m_home_menu_open && Emu.IsRunning())
 		{
 			bool ps_button_pressed = false;
 
