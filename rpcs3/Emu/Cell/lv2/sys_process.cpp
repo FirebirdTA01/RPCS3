@@ -508,6 +508,15 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 					// initial wait loop.
 					if (Emu.IsStarting())
 					{
+						// Clear cpu_flag::stop on this process's PPU threads BEFORE we transition
+						// state to running. The standard RunPPU fire path goes through Run()->
+						// line 2735 which is gated on rsx->is_initialized — that flip is a race
+						// with rsx::thread's worker calling on_task. Lose the race and the
+						// fallback (rsx::thread on_task line 996 queuing RunPPU via
+						// CallFromMainThread) runs AFTER FinalizeRunRequest below has already
+						// transitioned state, at which point RunPPU's graceful early-return
+						// skips the work and main_thread parks with stop still set.
+						Emu.RunPPU();
 						Emu.FinalizeRunRequest();
 					}
 
