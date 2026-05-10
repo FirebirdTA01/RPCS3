@@ -719,6 +719,8 @@ namespace rsx
 
 		m_draw_processor.init(m_ctx);
 
+		fifo_ctrl = std::make_unique<::rsx::FIFO::FIFO_control>(this);
+
 		if (g_cfg.misc.use_native_interface && (g_cfg.video.renderer == video_renderer::opengl || g_cfg.video.renderer == video_renderer::vulkan))
 		{
 			m_overlay_manager = fxo::init<rsx::overlays::display_manager>(0);
@@ -753,6 +755,13 @@ namespace rsx
 		{
 			// Allow to render a whole frame within this emulation session so there won't be missing graphics
 			m_pause_after_x_flips = 2;
+		}
+
+		if (ctrl)
+		{
+			// Savestate-restore path landed a real ctrl above; sync the FIFO
+			// bookkeeping to it.
+			fifo_ctrl->rebind_ctrl();
 		}
 	}
 
@@ -1006,9 +1015,6 @@ namespace rsx
 		}
 
 		performance_counters.state = FIFO::state::running;
-
-		fifo_ctrl = std::make_unique<::rsx::FIFO::FIFO_control>(this);
-		fifo_ctrl->set_get(ctrl->get);
 
 		resolution_scaling_config =
 		{
