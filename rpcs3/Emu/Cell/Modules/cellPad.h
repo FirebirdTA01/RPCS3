@@ -116,6 +116,8 @@ struct CellPadFilterIIRSos
 
 struct pad_info
 {
+	using is_process_local = std::true_type;
+
 	atomic_t<u32> max_connect = 0;
 	std::array<u32, CELL_PAD_MAX_PORT_NUM> port_setting{ 0 };
 	std::array<pad_data_internal, CELL_PAD_MAX_PORT_NUM> reported_info{};
