@@ -2254,14 +2254,22 @@ void ppu_thread::cpu_task()
 
 			// Wait until the progress dialog is closed.
 			// We don't want to open a cell dialog while a native progress dialog is still open.
-			while (u32 v = g_progr_ptotal)
+			//
+			// Skip this wait for non-pid-1 processes under co-resident execution: g_progr_ptotal
+			// is global, and pid 1 (VSH) may keep it non-zero indefinitely with background work
+			// (shader compiles, PPU module compiles on XMB navigation, etc), which would
+			// permanently block this process's main_thread from reaching its entry call.
+			if (owner_pid == 1)
 			{
-				if (Emu.IsStopped())
+				while (u32 v = g_progr_ptotal)
 				{
-					return;
-				}
+					if (Emu.IsStopped())
+					{
+						return;
+					}
 
-				g_progr_ptotal.wait(v);
+					g_progr_ptotal.wait(v);
+				}
 			}
 
 			g_fxo->get<progress_dialog_workaround>().show_overlay_message_only = true;
