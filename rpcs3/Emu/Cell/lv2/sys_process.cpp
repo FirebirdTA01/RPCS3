@@ -498,6 +498,19 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 					Emu.BootGame(path, "", true, cfg_mode::continuous, Emu.GetUsedConfig(), Emu.GetUsedDatabaseConfig());
 					Emu.ExitCoResidentLoad();
 
+					// Co-resident boot does not get the standard FinalizeRunRequest
+					// fire path because lv2_obj::sleep_unlocked's "Final Thread"
+					// branch is gated on global g_to_sleep being empty — pid 1
+					// threads keep it non-empty under co-resident, so the
+					// transition from starting to running never fires
+					// automatically. Trigger it explicitly here so this process
+					// exits the starting state and rsx::thread can leave its
+					// initial wait loop.
+					if (Emu.IsStarting())
+					{
+						Emu.FinalizeRunRequest();
+					}
+
 					sys_process.success("[VSH] non-destructive launch: booted %s", path);
 				});
 				return;

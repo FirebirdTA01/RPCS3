@@ -2757,7 +2757,15 @@ void Emulator::Run(bool start_playtime)
 
 void Emulator::RunPPU()
 {
-	ensure(IsStarting());
+	// Multi-fire safe: state may have already transitioned to running via
+	// a parallel path (e.g. lv2_exitspawn's explicit FinalizeRunRequest under
+	// co-resident load, or another RunPPU caller racing the state CAS).
+	// Per-thread work below is guarded with test_and_reset so a no-op call
+	// here is correct.
+	if (!IsStarting())
+	{
+		return;
+	}
 
 	bool signalled_thread = false;
 
