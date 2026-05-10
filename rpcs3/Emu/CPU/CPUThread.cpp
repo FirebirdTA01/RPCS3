@@ -858,7 +858,23 @@ cpu_thread::cpu_thread(u32 id)
 
 void cpu_thread::cpu_wait(bs_t<cpu_flag> old)
 {
+	// Diagnostic: long-wait logging for non-pid-1 threads. Helps identify
+	// multi-process IPC/sync stalls. The duration threshold filters out
+	// routine short waits so the log only captures unusual stalls.
+	const bool diag = (owner_pid != 1);
+	const u64 t0 = diag ? get_system_time() : 0;
+
 	state.wait(old);
+
+	if (diag)
+	{
+		const u64 dt = get_system_time() - t0;
+		if (dt >= 100000)  // 100 ms threshold
+		{
+			sys_log.notice("cpu_wait long: pid=%u name=%s state=0x%x waited=%.3fms",
+				owner_pid, thread_ctrl::get_name(), +old, dt / 1000.0);
+		}
+	}
 }
 
 static atomic_t<u32> s_dummy_atomic = 0;

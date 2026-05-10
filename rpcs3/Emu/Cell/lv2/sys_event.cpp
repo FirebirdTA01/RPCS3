@@ -491,6 +491,18 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 		if (queue.events.empty())
 		{
+			// Diagnostic: when a non-pid-1 thread is about to block on an event
+			// queue, log the queue key + owner + CIA + timeout. Helps identify
+			// cross-process IPC stalls where the producer is in a different
+			// (suspended) process. Drop once per-process IPC tracking is
+			// implemented in sys_event / cellAudio / sys_rsxaudio so cross-
+			// process queue lookups resolve through per-process owners.
+			if (ppu.owner_pid != 1)
+			{
+				sys_event.notice("sys_event_queue_receive blocking: pid=%u name=%s cia=0x%x equeue_id=0x%x key=0x%llx type=%u timeout=0x%llx",
+					ppu.owner_pid, ppu.get_name(), ppu.cia, equeue_id, queue.key, queue.type, timeout);
+			}
+
 			queue.sleep(ppu, timeout);
 			lv2_obj::emplace(queue.pq, &ppu);
 			return CELL_EBUSY;

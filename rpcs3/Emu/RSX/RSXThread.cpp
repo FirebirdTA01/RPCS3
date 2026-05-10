@@ -955,6 +955,9 @@ namespace rsx
 			return fmt::format("RSX [0x%07x]", rsx->ctrl ? +rsx->ctrl->get : 0);
 		};
 
+		rsx_log.notice("rsx::thread::on_task ENTER: pid=%u state=0x%x rsx_thread_running=%d external_interrupt_lock=%d",
+			owner_pid, +state, rsx_thread_running.load(), external_interrupt_lock.load());
+
 		if (!serialized) method_registers.init();
 
 		rsx::overlays::reset_performance_overlay();
@@ -1196,6 +1199,9 @@ namespace rsx
 
 	void thread::on_exit()
 	{
+		rsx_log.notice("rsx::thread::on_exit ENTER: pid=%u state=0x%x rsx_thread_running=%d external_interrupt_lock=%d test_stopped_inferred=%d",
+			owner_pid, +state, rsx_thread_running.load(), external_interrupt_lock.load(), is_stopped(state));
+
 		if (zcull_ctrl)
 		{
 			zcull_ctrl->sync(this);
