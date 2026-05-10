@@ -14,6 +14,51 @@
 
 LOG_CHANNEL(jit_log, "JIT");
 
+// JIT memory pool — per-process ownership of the host VA reservations used by
+// long-lived MemoryManager1 instances. The pool outlives each MM1; the
+// MM1 destructor is a no-op for the reservation when pool-backed.
+
+ppu_jit_memory_region::ppu_jit_memory_region()
+{
+	m_code_mems = utils::memory_reserve(c_total_size);
+}
+
+ppu_jit_memory_region::~ppu_jit_memory_region()
+{
+	if (m_code_mems)
+	{
+		utils::memory_decommit(m_code_mems, c_total_size);
+		utils::memory_release(m_code_mems, c_total_size);
+		m_code_mems = nullptr;
+	}
+}
+
+ppu_jit_memory_pool::ppu_jit_memory_pool() = default;
+
+ppu_jit_memory_pool::~ppu_jit_memory_pool()
+{
+	clear();
+}
+
+ppu_jit_memory_region* ppu_jit_memory_pool::take_region()
+{
+	auto region = std::make_unique<ppu_jit_memory_region>();
+	auto* raw = region.get();
+	std::lock_guard lock(m_mtx);
+	m_regions.emplace_back(std::move(region));
+	return raw;
+}
+
+void ppu_jit_memory_pool::clear()
+{
+	std::vector<std::unique_ptr<ppu_jit_memory_region>> drain;
+	{
+		std::lock_guard lock(m_mtx);
+		drain.swap(m_regions);
+	}
+	drain.clear();   // releases under no lock
+}
+
 #ifdef LLVM_AVAILABLE
 
 #include <unordered_map>
@@ -188,6 +233,9 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 	void* m_data_ro_mems = nullptr;
 	void* m_data_rw_mems = nullptr;
 
+	// When pool-backed (region != nullptr), the reservation outlives us
+	bool m_owns_reservation = true;
+
 	u64 code_ptr = 0;
 	u64 data_ro_ptr = 0;
 	u64 data_rw_ptr = 0;
@@ -196,14 +244,24 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 	// May be a memory container internally
 	std::function<u64(const std::string&)> m_symbols_cement;
 
-	MemoryManager1(std::function<u64(const std::string&)> symbols_cement = {}) noexcept
+	MemoryManager1(std::function<u64(const std::string&)> symbols_cement = {},
+	               ppu_jit_memory_region* region = nullptr) noexcept
 		: m_symbols_cement(std::move(symbols_cement))
 	{
-		auto ptr = reinterpret_cast<u8*>(utils::memory_reserve(c_max_size * 3));
-		m_code_mems = ptr;
+		if (region)
+		{
+			m_code_mems = region->m_code_mems;
+			m_owns_reservation = false;
+		}
+		else
+		{
+			auto ptr = reinterpret_cast<u8*>(utils::memory_reserve(c_max_size * 3));
+			m_code_mems = ptr;
+			m_owns_reservation = true;
+		}
+		auto ptr = reinterpret_cast<u8*>(m_code_mems) + c_max_size;
 		// ptr += c_max_size;
 		// m_data_ro_mems = ptr;
-		 ptr += c_max_size;
 		m_data_rw_mems = ptr;
 	}
 
@@ -213,12 +271,15 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 
 	~MemoryManager1() override
 	{
-		// Hack: don't release to prevent reuse of address space, see jit_announce
-		// constexpr auto how_much = [](u64 pos) { return utils::align(pos, pos < c_page_size ? c_page_size / 4 : c_page_size); };
-		// utils::memory_decommit(m_code_mems, how_much(code_ptr));
-		// utils::memory_decommit(m_data_ro_mems, how_much(data_ro_ptr));
-		// utils::memory_decommit(m_data_rw_mems, how_much(data_rw_ptr));
-		utils::memory_decommit(m_code_mems, c_max_size * 3);
+		if (m_owns_reservation && m_code_mems)
+		{
+			// Hack: don't release to prevent reuse of address space, see jit_announce
+			// constexpr auto how_much = [](u64 pos) { return utils::align(pos, pos < c_page_size ? c_page_size / 4 : c_page_size); };
+			// utils::memory_decommit(m_code_mems, how_much(code_ptr));
+			// utils::memory_decommit(m_data_ro_mems, how_much(data_ro_ptr));
+			// utils::memory_decommit(m_data_rw_mems, how_much(data_rw_ptr));
+			utils::memory_decommit(m_code_mems, c_max_size * 3);
+		}
 	}
 
 	llvm::JITSymbol findSymbol(const std::string& name) override
@@ -639,7 +700,9 @@ bool jit_compiler::add_sub_disk_space(ssz space)
 	}).second;
 }
 
-jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, u32 flags, std::function<u64(const std::string&)> symbols_cement) noexcept
+jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, u32 flags,
+                           std::function<u64(const std::string&)> symbols_cement,
+                           ppu_jit_memory_region* code_region) noexcept
 	: m_context(new llvm::LLVMContext)
 	, m_cpu(cpu(_cpu))
 {
@@ -671,7 +734,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 		// Auxiliary JIT (does not use custom memory manager, only writes the objects)
 		if (flags & 0x1)
 		{
-			mem = std::make_unique<MemoryManager1>(std::move(symbols_cement));
+			mem = std::make_unique<MemoryManager1>(std::move(symbols_cement), code_region);
 		}
 		else
 		{
@@ -685,7 +748,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 	}
 	else
 	{
-		mem = std::make_unique<MemoryManager1>(std::move(symbols_cement));
+		mem = std::make_unique<MemoryManager1>(std::move(symbols_cement), code_region);
 	}
 
 	std::vector<std::string> attributes;

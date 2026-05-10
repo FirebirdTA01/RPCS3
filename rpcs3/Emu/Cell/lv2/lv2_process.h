@@ -12,6 +12,7 @@
 #include "util/fixed_typemap.hpp"
 #include "Emu/Memory/vm.h"
 #include "Emu/RSX/RSXContext.h"
+#include "Utilities/JITMemoryPool.h"
 
 enum class system_state : u32
 {
@@ -64,6 +65,9 @@ public:
 
 	stx::manual_typemap<lv2_process, 0x20'00000, 128>& local_fxo() { return m_local_fxo; }
 	const stx::manual_typemap<lv2_process, 0x20'00000, 128>& local_fxo() const { return m_local_fxo; }
+
+	ppu_jit_memory_pool& jit_pool() { return m_jit_pool; }
+	const ppu_jit_memory_pool& jit_pool() const { return m_jit_pool; }
 
 	vm::vm_handle& vm_handle() { return vm; }
 	const vm::vm_handle& vm_handle() const { return vm; }
@@ -248,6 +252,7 @@ private:
 	atomic_t<system_state> m_state{system_state::stopped};
 	u32 m_pid = 1;
 	stx::manual_typemap<lv2_process, 0x20'00000, 128> m_local_fxo;
+	ppu_jit_memory_pool m_jit_pool;
 	vm::vm_handle vm;
 	rsx::rsx_context_state rsx_state;
 };

@@ -11,6 +11,7 @@ void lv2_process::reset()
 	// this function does not touch those pointers.
 
 	m_local_fxo.reset();
+	m_jit_pool.clear();
 
 	// Zero the vm_handle's per-process arrays. Single-threaded at the
 	// destroy_process call site (the process has no live threads), so

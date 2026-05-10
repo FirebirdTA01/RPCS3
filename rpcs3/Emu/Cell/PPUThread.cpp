@@ -5367,7 +5367,8 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	// Initialize compiler instance
 	while (jits.size() < utils::aligned_div<u64>(module_counter, c_moudles_per_jit) && is_being_used_in_emulation)
 	{
-		jits.emplace_back(std::make_shared<jit_compiler>(s_link_table, g_cfg.core.llvm_cpu, 0, symbols_cement));
+		jits.emplace_back(std::make_shared<jit_compiler>(s_link_table, g_cfg.core.llvm_cpu, 0, symbols_cement,
+		                                                        Emu.current_process().jit_pool().take_region()));
 
 		for (const auto& [addr, func] : *shared_map)
 		{

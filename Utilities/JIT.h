@@ -2,6 +2,7 @@
 
 #include "util/types.hpp"
 #include "util/atomic.hpp"
+#include "Utilities/JITMemoryPool.h"
 
 // Include asmjit with warnings ignored
 #define ASMJIT_EMBED
@@ -525,7 +526,9 @@ class jit_compiler final
 	atomic_t<usz> m_disk_space = umax;
 
 public:
-	jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, u32 flags = 0, std::function<u64(const std::string&)> symbols_cement = {}) noexcept;
+	jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, u32 flags = 0,
+	             std::function<u64(const std::string&)> symbols_cement = {},
+	             ppu_jit_memory_region* code_region = nullptr) noexcept;
 	jit_compiler& operator=(thread_state) noexcept;
 	~jit_compiler() noexcept;
 
