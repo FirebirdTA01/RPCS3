@@ -15,6 +15,7 @@
 #include "Emu/system_progress.hpp"
 #include "Emu/system_utils.hpp"
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 #include "PPUThread.h"
 #include "PPUInterpreter.h"
 #include "PPUAnalyser.h"
@@ -2326,7 +2327,7 @@ void ppu_thread::cpu_sleep()
 {
 	if (owner_pid != 1)
 	{
-		ppu_log.notice("GAMMA5 cpu_sleep entry: pid=%u id=0x%x func=%s cia=0x%x state=0x%x gpr3=0x%llx",
+		MPDBG_LOG(ppu_log, "GAMMA5 cpu_sleep entry: pid=%u id=0x%x func=%s cia=0x%x state=0x%x gpr3=0x%llx",
 			owner_pid, id, current_function ? current_function : "", cia, +state.load(), static_cast<unsigned long long>(gpr[3]));
 	}
 
@@ -2413,7 +2414,7 @@ void ppu_thread::cpu_wait(bs_t<cpu_flag> old)
 		const u64 dt = get_system_time() - t0;
 		if (dt >= 100000)  // 100 ms threshold
 		{
-			ppu_log.notice("ppu cpu_wait long: pid=%u name=%s cia=0x%x state=0x%x waited=%.3fms",
+			MPDBG_LOG(ppu_log, "ppu cpu_wait long: pid=%u name=%s cia=0x%x state=0x%x waited=%.3fms",
 				owner_pid, thread_ctrl::get_name(), cia, +old, dt / 1000.0);
 		}
 	}
@@ -2844,7 +2845,7 @@ void ppu_thread::cmd_push(cmd64 cmd)
 	{
 		const auto type = cmd.arg1<ppu_cmd>();
 		const u32 arg = cmd.arg2<u32>();
-		ppu_log.notice("cmd_push: pid=%u name=%s type=%u arg=0x%x pos=%u",
+		MPDBG_LOG(ppu_log, "cmd_push: pid=%u name=%s type=%u arg=0x%x pos=%u",
 			owner_pid, thread_ctrl::get_name(), static_cast<u32>(type), arg, pos);
 	}
 }
@@ -2872,7 +2873,7 @@ void ppu_thread::cmd_list(std::initializer_list<cmd64> list)
 		const cmd64 head = *list.begin();
 		const auto htype = head.arg1<ppu_cmd>();
 		const u32 harg = head.arg2<u32>();
-		ppu_log.notice("cmd_list: pid=%u name=%s count=%zu head_type=%u head_arg=0x%x pos=%u",
+		MPDBG_LOG(ppu_log, "cmd_list: pid=%u name=%s count=%zu head_type=%u head_arg=0x%x pos=%u",
 			owner_pid, thread_ctrl::get_name(), list.size(), static_cast<u32>(htype), harg, pos);
 	}
 }
@@ -2911,12 +2912,12 @@ cmd64 ppu_thread::cmd_wait()
 				// consumes and dispatches.
 				const auto type = result.arg1<ppu_cmd>();
 				const u32 arg = result.arg2<u32>();
-				ppu_log.notice("cmd_wait dispatch: pid=%u name=%s cia=0x%x type=%u arg=0x%x iters=%llu waited=%.3fms",
+				MPDBG_LOG(ppu_log, "cmd_wait dispatch: pid=%u name=%s cia=0x%x type=%u arg=0x%x iters=%llu waited=%.3fms",
 					owner_pid, thread_ctrl::get_name(), cia, static_cast<u32>(type), arg, wait_iters, dt / 1000.0);
 
 				if (dt >= 100000)
 				{
-					ppu_log.notice("cmd_wait long: pid=%u name=%s cia=0x%x iters=%llu waited=%.3fms",
+					MPDBG_LOG(ppu_log, "cmd_wait long: pid=%u name=%s cia=0x%x iters=%llu waited=%.3fms",
 						owner_pid, thread_ctrl::get_name(), cia, wait_iters, dt / 1000.0);
 				}
 			}
@@ -2954,7 +2955,7 @@ void ppu_thread::fast_call(u32 addr, u64 rtoc, bool is_thread_entry)
 	const u64 fc_t0 = fc_diag ? get_system_time() : 0;
 	if (fc_diag)
 	{
-		ppu_log.notice("fast_call enter: pid=%u name=%s addr=0x%x rtoc=0x%llx is_thread_entry=%d",
+		MPDBG_LOG(ppu_log, "fast_call enter: pid=%u name=%s addr=0x%x rtoc=0x%llx is_thread_entry=%d",
 			owner_pid, get_name(), addr, rtoc, is_thread_entry);
 	}
 
@@ -3049,7 +3050,7 @@ void ppu_thread::fast_call(u32 addr, u64 rtoc, bool is_thread_entry)
 	if (fc_diag)
 	{
 		const u64 dt_ms = (get_system_time() - fc_t0) / 1000;
-		ppu_log.notice("fast_call exit: pid=%u name=%s addr=0x%x duration_ms=%llu",
+		MPDBG_LOG(ppu_log, "fast_call exit: pid=%u name=%s addr=0x%x duration_ms=%llu",
 			owner_pid, get_name(), addr, dt_ms);
 	}
 }

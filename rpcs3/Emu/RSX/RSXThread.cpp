@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "RSXThread.h"
 
+#include "Emu/multiproc_debug.h"
 #include "Capture/rsx_capture.h"
 #include "Common/surface_store.h"
 #include "Core/RSXReservationLock.hpp"
@@ -962,7 +963,7 @@ namespace rsx
 			return fmt::format("RSX [0x%07x]", rsx->ctrl ? +rsx->ctrl->get : 0);
 		};
 
-		rsx_log.notice("rsx::thread::on_task ENTER: pid=%u state=0x%x rsx_thread_running=%d external_interrupt_lock=%d",
+		MPDBG_LOG(rsx_log, "rsx::thread::on_task ENTER: pid=%u state=0x%x rsx_thread_running=%d external_interrupt_lock=%d",
 			owner_pid, +state, rsx_thread_running.load(), external_interrupt_lock.load());
 
 		if (!serialized) method_registers.init();
@@ -1213,7 +1214,7 @@ namespace rsx
 
 	void thread::on_exit()
 	{
-		rsx_log.notice("rsx::thread::on_exit ENTER: pid=%u state=0x%x rsx_thread_running=%d external_interrupt_lock=%d test_stopped_inferred=%d",
+		MPDBG_LOG(rsx_log, "rsx::thread::on_exit ENTER: pid=%u state=0x%x rsx_thread_running=%d external_interrupt_lock=%d test_stopped_inferred=%d",
 			owner_pid, +state, rsx_thread_running.load(), external_interrupt_lock.load(), is_stopped(state));
 
 		if (zcull_ctrl)
@@ -2517,7 +2518,7 @@ namespace rsx
 		flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;
 		fifo_ret_addr = RSX_CALL_STACK_EMPTY;
 
-		rsx_log.notice("rsx::thread::init: dma_address=0x%x ctrl=%p", ctrlAddress, static_cast<void*>(ctrl));
+		MPDBG_LOG(rsx_log, "rsx::thread::init: dma_address=0x%x ctrl=%p", ctrlAddress, static_cast<void*>(ctrl));
 
 		vm::write32(device_addr + 0x30, 1);
 		std::memset(display_buffers, 0, sizeof(display_buffers));

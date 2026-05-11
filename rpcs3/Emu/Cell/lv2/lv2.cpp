@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/Memory/vm_locking.h"
@@ -1860,7 +1861,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 			}
 		}
 
-		ppu_log.notice("GAMMA5 awake_unlocked: caller_pid=%u caller_id=0x%x caller_func=%s caller_state=0x%x caller_in_window=%d woken_pid=%u woken_id=0x%x woken_func=%s woken_state=0x%x woken_in_window=%d pending=%u caller_pending_pid=%u woken_pending_pid=%u ready=%d pid2_queue=%zu window_count=%zu eligible=%zu changed=%d prio=%d",
+		MPDBG_LOG(ppu_log, "GAMMA5 awake_unlocked: caller_pid=%u caller_id=0x%x caller_func=%s caller_state=0x%x caller_in_window=%d woken_pid=%u woken_id=0x%x woken_func=%s woken_state=0x%x woken_in_window=%d pending=%u caller_pending_pid=%u woken_pending_pid=%u ready=%d pid2_queue=%zu window_count=%zu eligible=%zu changed=%d prio=%d",
 			current_ppu ? current_ppu->owner_pid : 0, current_ppu ? current_ppu->id : 0, current_ppu && current_ppu->current_function ? current_ppu->current_function : "",
 			current_ppu ? static_cast<u32>(+current_ppu->state.load()) : 0u, current_ppu && scheduler_window.contains(current_ppu),
 			woken_ppu ? woken_ppu->owner_pid : 0, woken_ppu ? woken_ppu->id : 0, woken_ppu && woken_ppu->current_function ? woken_ppu->current_function : "",
@@ -1872,7 +1873,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		for (usz i = 0; i < scheduler_window.count; i++)
 		{
 			const ppu_thread* const target = scheduler_window.threads[i];
-			ppu_log.notice("GAMMA5 awake_unlocked window[%zu]: pid=%u id=0x%x func=%s state=0x%x start=0x%llx",
+			MPDBG_LOG(ppu_log, "GAMMA5 awake_unlocked window[%zu]: pid=%u id=0x%x func=%s state=0x%x start=0x%llx",
 				i, target->owner_pid, target->id, target->current_function ? target->current_function : "",
 				+target->state.load(), static_cast<unsigned long long>(target->start_time));
 		}
@@ -1994,7 +1995,7 @@ void lv2_obj::schedule_all(u64 current_time)
 			}
 		}
 
-		ppu_log.notice("GAMMA5 schedule_all skipped: caller pid=%u id=0x%x func=%s state=0x%x in_queue=%d pending=%u pending_pid=%u ready=%d",
+		MPDBG_LOG(ppu_log, "GAMMA5 schedule_all skipped: caller pid=%u id=0x%x func=%s state=0x%x in_queue=%d pending=%u pending_pid=%u ready=%d",
 			current_ppu->owner_pid, current_ppu->id, current_ppu->current_function ? current_ppu->current_function : "",
 			+current_ppu->state.load(), in_queue, g_pending, g_pending_per_pid[pending_pid_index(current_ppu->owner_pid)], +g_scheduler_ready);
 	}
@@ -2005,7 +2006,7 @@ void lv2_obj::schedule_all(u64 current_time)
 
 		if (gamma5_diag)
 		{
-			ppu_log.notice("GAMMA5 schedule_all: caller pid=%u id=0x%x func=%s state=0x%x in_window=%d pending=%u pending_pid=%u ready=%d pid2_queue=%zu window_count=%zu eligible=%zu",
+			MPDBG_LOG(ppu_log, "GAMMA5 schedule_all: caller pid=%u id=0x%x func=%s state=0x%x in_window=%d pending=%u pending_pid=%u ready=%d pid2_queue=%zu window_count=%zu eligible=%zu",
 				current_ppu ? current_ppu->owner_pid : 0, current_ppu ? current_ppu->id : 0, current_ppu && current_ppu->current_function ? current_ppu->current_function : "",
 				current_ppu ? static_cast<u32>(+current_ppu->state.load()) : 0u, current_ppu && scheduler_window.contains(current_ppu), g_pending,
 				current_ppu ? g_pending_per_pid[pending_pid_index(current_ppu->owner_pid)] : 0, +g_scheduler_ready, count_pid2_ppus(), scheduler_window.count, scheduler_window.eligible_count);
@@ -2013,7 +2014,7 @@ void lv2_obj::schedule_all(u64 current_time)
 			for (usz i = 0; i < scheduler_window.count; i++)
 			{
 				const ppu_thread* const target = scheduler_window.threads[i];
-				ppu_log.notice("GAMMA5 schedule_all window[%zu]: pid=%u id=0x%x func=%s state=0x%x start=0x%llx",
+				MPDBG_LOG(ppu_log, "GAMMA5 schedule_all window[%zu]: pid=%u id=0x%x func=%s state=0x%x start=0x%llx",
 					i, target->owner_pid, target->id, target->current_function ? target->current_function : "",
 					+target->state.load(), static_cast<unsigned long long>(target->start_time));
 			}
@@ -2031,7 +2032,7 @@ void lv2_obj::schedule_all(u64 current_time)
 			{
 				if (gamma5_diag)
 				{
-					ppu_log.notice("GAMMA5 schedule_all pid-gated: pid=%u id=0x%x func=%s pending_pid=%u state=0x%x",
+					MPDBG_LOG(ppu_log, "GAMMA5 schedule_all pid-gated: pid=%u id=0x%x func=%s pending_pid=%u state=0x%x",
 						target->owner_pid, target->id, target->current_function ? target->current_function : "",
 						target_pending, +target->state.load());
 				}

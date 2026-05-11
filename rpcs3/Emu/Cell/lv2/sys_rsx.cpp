@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "sys_rsx.h"
 
+#include "Emu/multiproc_debug.h"
 #include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -48,7 +49,7 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 
 	if (gamma8_diag)
 	{
-		sys_rsx.notice("GAMMA8 set_rsx_dmactl enter: caller_pid=%u active_pid=%u render=%p render_pid=%u get_put=0x%llx old_new_get_put=0x%llx mask=0x%x fifo=%p dma=0x%x",
+		MPDBG_LOG(sys_rsx, "GAMMA8 set_rsx_dmactl enter: caller_pid=%u active_pid=%u render=%p render_pid=%u get_put=0x%llx old_new_get_put=0x%llx mask=0x%x fifo=%p dma=0x%x",
 			caller_pid, Emu.current_process().pid(), static_cast<void*>(render), render ? render->owner_pid : 0,
 			get_put, render ? +render->new_get_put : umax, render ? +render->m_eng_interrupt_mask : 0,
 			render && render->fifo_ctrl ? static_cast<void*>(render->fifo_ctrl.get()) : nullptr, render ? render->dma_address : 0);
@@ -80,7 +81,7 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 
 		if (gamma8_diag)
 		{
-			sys_rsx.notice("GAMMA8 set_rsx_dmactl queued: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x",
+			MPDBG_LOG(sys_rsx, "GAMMA8 set_rsx_dmactl queued: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x",
 				caller_pid, static_cast<void*>(render), render->owner_pid, +render->new_get_put, +render->m_eng_interrupt_mask);
 		}
 	}
@@ -94,7 +95,7 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 		{
 			if (gamma8_diag && (wait_iters++ % 1000) == 0)
 			{
-				sys_rsx.notice("GAMMA8 set_rsx_dmactl wait: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x state=0x%x",
+				MPDBG_LOG(sys_rsx, "GAMMA8 set_rsx_dmactl wait: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x state=0x%x",
 					caller_pid, static_cast<void*>(render), render->owner_pid, +render->new_get_put, +render->m_eng_interrupt_mask, +cpu->state);
 			}
 
@@ -113,7 +114,7 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 
 		if (gamma8_diag)
 		{
-			sys_rsx.notice("GAMMA8 set_rsx_dmactl done: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x state=0x%x",
+			MPDBG_LOG(sys_rsx, "GAMMA8 set_rsx_dmactl done: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x state=0x%x",
 				caller_pid, static_cast<void*>(render), render->owner_pid, +render->new_get_put, +render->m_eng_interrupt_mask, +cpu->state);
 		}
 	}

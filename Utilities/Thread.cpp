@@ -10,6 +10,7 @@
 #include "Utilities/JIT.h"
 #include <cfenv>
 #include "stack_trace.h"
+#include "Emu/multiproc_debug.h"
 
 #ifdef ARCH_ARM64
 #include "Emu/CPU/Backends/AArch64/AArch64Signal.h"
@@ -2139,6 +2140,7 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 	// identifying null-deref sites under multi-process bring-up; libc backtrace()
 	// is technically not fully async-signal-safe but matches the existing Windows
 	// path's behavior, and the process is about to die anyway.
+#ifdef RPCS3_MULTIPROC_DEBUG
 	const auto stack_trace = utils::get_backtrace(64);
 	const auto stack_symbols = utils::get_backtrace_symbols(stack_trace);
 	msg += "Host Stack Trace:\n";
@@ -2146,6 +2148,7 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 	{
 		fmt::append(msg, "  %s\n", symbol);
 	}
+#endif
 
 	sys_log.fatal("\n%s", msg);
 	sys_log.notice("\n%s", dump_useful_thread_info());

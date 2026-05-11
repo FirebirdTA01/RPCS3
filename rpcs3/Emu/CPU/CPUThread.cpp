@@ -3,6 +3,7 @@
 #include "CPUDisAsm.h"
 
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/system_config.h"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
@@ -756,7 +757,7 @@ void cpu_thread::operator()()
 	cleanup.name = thread_ctrl::get_name();
 	cleanup.log_prefix = old_prefix;
 
-	sys_log.warning("CPU_LOOP_ENTRY: name=%s id=0x%x pid=%u",
+	MPDBG_LOG(sys_log, "CPU_LOOP_ENTRY: name=%s id=0x%x pid=%u",
 		thread_ctrl::get_name(), id, owner_pid);
 
 	bool cpu_task_first_entry = true;
@@ -777,7 +778,7 @@ void cpu_thread::operator()()
 			if (cpu_task_first_entry)
 			{
 				cpu_task_first_entry = false;
-				sys_log.warning("CPU_TASK_FIRST: name=%s id=0x%x pid=%u",
+				MPDBG_LOG(sys_log, "CPU_TASK_FIRST: name=%s id=0x%x pid=%u",
 					thread_ctrl::get_name(), id, owner_pid);
 			}
 
@@ -872,7 +873,7 @@ void cpu_thread::cpu_wait(bs_t<cpu_flag> old)
 		const u64 dt = get_system_time() - t0;
 		if (dt >= 100000)  // 100 ms threshold
 		{
-			sys_log.notice("cpu_wait long: pid=%u name=%s state=0x%x waited=%.3fms",
+			MPDBG_LOG(sys_log, "cpu_wait long: pid=%u name=%s state=0x%x waited=%.3fms",
 				owner_pid, thread_ctrl::get_name(), +old, dt / 1000.0);
 		}
 	}

@@ -4,6 +4,7 @@
 #include "Emu/Memory/vm.h"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/system_progress.hpp"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/system_utils.hpp"
@@ -5022,7 +5023,7 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
 	}
 
 	sys_log.notice("set_active_process: switching from pid %u to pid %u", m_active_process_index + 1, pid);
-	sys_log.notice("set_active_process: suspend_outgoing=%d", suspend_outgoing ? 1 : 0);
+	MPDBG_LOG(sys_log, "set_active_process: suspend_outgoing=%d", suspend_outgoing ? 1 : 0);
 
 	// Take exclusive lock — prevents concurrent guest-memory reads during swap
 	std::unique_lock lock(m_vm_swap_mutex);

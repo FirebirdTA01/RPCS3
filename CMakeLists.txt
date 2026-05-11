@@ -9,6 +9,12 @@ endif()
 
 project(rpcs3 LANGUAGES C CXX)
 
+option(USE_MULTIPROC_DEBUG "Enable multi-process bring-up diagnostic logging" OFF)
+if(USE_MULTIPROC_DEBUG)
+    add_compile_definitions(RPCS3_MULTIPROC_DEBUG)
+    message(STATUS "Multi-process debug diagnostics: ENABLED")
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
