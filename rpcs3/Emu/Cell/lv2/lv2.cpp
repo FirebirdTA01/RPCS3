@@ -1292,6 +1292,7 @@ std::string ppu_get_syscall_name(u64 code)
 DECLARE(lv2_obj::g_mutex);
 DECLARE(lv2_obj::g_ppu){};
 DECLARE(lv2_obj::g_pending){};
+DECLARE(lv2_obj::g_pending_per_pid){};
 DECLARE(lv2_obj::g_priority_order_tag){};
 
 thread_local DECLARE(lv2_obj::g_to_notify){};
@@ -1308,6 +1309,84 @@ static atomic_t<u64> s_yield_frequency = 0;
 static atomic_t<u64> s_max_allowed_yield_tsc = 0;
 static u64 s_last_yield_tsc = 0;
 atomic_t<u32> g_lv2_preempts_taken = 0;
+
+bool lv2_obj::ppu_scheduler_window::contains(const ppu_thread* ppu) const
+{
+	return std::find(std::begin(threads), std::begin(threads) + count, ppu) != std::begin(threads) + count;
+}
+
+bool lv2_obj::ppu_scheduler_window::contains_pid(u32 pid) const
+{
+	return std::find_if(std::begin(threads), std::begin(threads) + count, [pid](const ppu_thread* ppu)
+	{
+		return ppu->owner_pid == pid;
+	}) != std::begin(threads) + count;
+}
+
+u32 lv2_obj::ppu_scheduler_window::index_of(const ppu_thread* ppu) const
+{
+	const auto found = std::find(std::begin(threads), std::begin(threads) + count, ppu);
+	return found == std::begin(threads) + count ? umax : ::narrow<u32>(std::distance(std::begin(threads), found));
+}
+
+void lv2_obj::ppu_scheduler_window::append(ppu_thread* ppu)
+{
+	ensure(count < std::size(threads));
+	threads[count++] = ppu;
+}
+
+bool lv2_obj::is_ppu_scheduler_eligible(const ppu_thread* ppu)
+{
+	return !(ppu->state & cpu_flag::process_suspended);
+}
+
+u32 lv2_obj::pending_pid_index(u32 owner_pid)
+{
+	return owner_pid < std::size(g_pending_per_pid) ? owner_pid : 0;
+}
+
+lv2_obj::ppu_scheduler_window lv2_obj::make_ppu_scheduler_window()
+{
+	ppu_scheduler_window result;
+	const usz window_size = std::min<usz>(g_cfg.core.ppu_threads, std::size(result.threads));
+
+	if (!window_size)
+	{
+		return result;
+	}
+
+	// Co-resident processes share one PPE-sized scheduler window. Reserve the
+	// first slot encountered for each owner pid, then fill remaining slots by
+	// the existing priority/FIFO order. RPCS3 currently supports pid 1 and pid
+	// 2; if more live processes are added, this should grow a rotating pid
+	// cursor so pids beyond the window cannot starve.
+	for (auto target = atomic_storage<ppu_thread*>::load(g_ppu); target; target = atomic_storage<ppu_thread*>::load(target->next_ppu))
+	{
+		if (!is_ppu_scheduler_eligible(target))
+		{
+			continue;
+		}
+
+		result.eligible_count++;
+
+		if (result.count < window_size && !result.contains_pid(target->owner_pid))
+		{
+			result.append(target);
+		}
+	}
+
+	for (auto target = atomic_storage<ppu_thread*>::load(g_ppu); target && result.count < window_size; target = atomic_storage<ppu_thread*>::load(target->next_ppu))
+	{
+		if (!is_ppu_scheduler_eligible(target) || result.contains(target))
+		{
+			continue;
+		}
+
+		result.append(target);
+	}
+
+	return result;
+}
 
 namespace cpu_counter
 {
@@ -1500,7 +1579,8 @@ bool lv2_obj::sleep_unlocked(cpu_thread& thread, u64 timeout, u64 current_time)
 		if (ppu->ack_suspend)
 		{
 			ppu->ack_suspend = false;
-			g_pending--;
+			ensure(g_pending)--;
+			ensure(g_pending_per_pid[pending_pid_index(ppu->owner_pid)])--;
 		}
 
 		if (std::exchange(ppu->cancel_sleep, 0) == 2)
@@ -1763,25 +1843,56 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		}
 	}
 
-	auto target = +g_ppu;
-	usz i = 0;
+	const ppu_scheduler_window scheduler_window = make_ppu_scheduler_window();
+	const auto current_ppu = cpu_thread::get_current<ppu_thread>();
+	const auto woken_ppu = cpu ? static_cast<ppu_thread*>(cpu) : nullptr;
+	const bool gamma5_diag = (current_ppu && current_ppu->owner_pid != 1) || (woken_ppu && woken_ppu->owner_pid != 1) || scheduler_window.contains_pid(2);
 
-	// Suspend threads past the N-thread scheduler window. process_suspended
-	// threads (belonging to a non-active process) are not scheduled and must
-	// not consume slots in the window, otherwise active-process threads at the
-	// tail of g_ppu never get a slot to run.
-	for (usz thread_count = g_cfg.core.ppu_threads; target; target = target->next_ppu)
+	if (gamma5_diag)
 	{
-		if (target->state & cpu_flag::process_suspended)
+		usz pid2_count = 0;
+
+		for (auto target = +g_ppu; target; target = target->next_ppu)
+		{
+			if (target->owner_pid == 2)
+			{
+				pid2_count++;
+			}
+		}
+
+		ppu_log.notice("GAMMA5 awake_unlocked: caller_pid=%u caller_id=0x%x caller_func=%s caller_state=0x%x caller_in_window=%d woken_pid=%u woken_id=0x%x woken_func=%s woken_state=0x%x woken_in_window=%d pending=%u caller_pending_pid=%u woken_pending_pid=%u ready=%d pid2_queue=%zu window_count=%zu eligible=%zu changed=%d prio=%d",
+			current_ppu ? current_ppu->owner_pid : 0, current_ppu ? current_ppu->id : 0, current_ppu && current_ppu->current_function ? current_ppu->current_function : "",
+			current_ppu ? static_cast<u32>(+current_ppu->state.load()) : 0u, current_ppu && scheduler_window.contains(current_ppu),
+			woken_ppu ? woken_ppu->owner_pid : 0, woken_ppu ? woken_ppu->id : 0, woken_ppu && woken_ppu->current_function ? woken_ppu->current_function : "",
+			woken_ppu ? static_cast<u32>(+woken_ppu->state.load()) : 0u, woken_ppu && scheduler_window.contains(woken_ppu),
+			g_pending, current_ppu ? g_pending_per_pid[pending_pid_index(current_ppu->owner_pid)] : 0,
+			woken_ppu ? g_pending_per_pid[pending_pid_index(woken_ppu->owner_pid)] : 0, +g_scheduler_ready,
+			pid2_count, scheduler_window.count, scheduler_window.eligible_count, changed_queue, prio);
+
+		for (usz i = 0; i < scheduler_window.count; i++)
+		{
+			const ppu_thread* const target = scheduler_window.threads[i];
+			ppu_log.notice("GAMMA5 awake_unlocked window[%zu]: pid=%u id=0x%x func=%s state=0x%x start=0x%llx",
+				i, target->owner_pid, target->id, target->current_function ? target->current_function : "",
+				+target->state.load(), static_cast<unsigned long long>(target->start_time));
+		}
+	}
+
+	// Suspend threads outside the selected PPE-sized scheduler window.
+	// process_suspended threads are not scheduled and must not consume slots.
+	for (auto target = +g_ppu; target; target = target->next_ppu)
+	{
+		if (!is_ppu_scheduler_eligible(target))
 		{
 			continue;
 		}
 
-		if (i >= thread_count && cpu_flag::suspend - target->state)
+		if (!scheduler_window.contains(target) && cpu_flag::suspend - target->state)
 		{
 			ppu_log.trace("suspend(): %s", target->id);
 			target->ack_suspend = true;
 			g_pending++;
+			g_pending_per_pid[pending_pid_index(target->owner_pid)]++;
 			ensure(!target->state.test_and_set(cpu_flag::suspend));
 
 			if (is_paused(target->state - cpu_flag::suspend))
@@ -1789,11 +1900,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 				target->state.notify_one();
 			}
 		}
-
-		i++;
 	}
-
-	const auto current_ppu = cpu_thread::get_current<ppu_thread>();
 
 	// Remove pending if necessary
 	if (current_ppu)
@@ -1801,6 +1908,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		if (std::exchange(current_ppu->ack_suspend, false))
 		{
 			ensure(g_pending)--;
+			ensure(g_pending_per_pid[pending_pid_index(current_ppu->owner_pid)])--;
 		}
 	}
 
@@ -1841,28 +1949,93 @@ void lv2_obj::cleanup()
 	g_to_sleep.clear();
 	g_waiting.clear();
 	g_pending = 0;
+	std::fill(std::begin(g_pending_per_pid), std::end(g_pending_per_pid), 0);
 	s_yield_frequency = 0;
 }
 
 void lv2_obj::schedule_all(u64 current_time)
 {
 	auto it = std::find(g_to_notify, std::end(g_to_notify), std::add_pointer_t<const void>{});
+	const auto current_ppu = cpu_thread::get_current<ppu_thread>();
 
-	if (!g_pending && g_scheduler_ready)
+	const auto count_pid2_ppus = [&]() -> usz
 	{
-		auto target = +g_ppu;
-		usz remaining = g_cfg.core.ppu_threads;
+		usz pid2_count = 0;
 
-		// Wake up threads. process_suspended threads belong to a process that
-		// is not the active one (suspend_process tagged them); they should not
-		// occupy slots in the N=ppu_threads scheduler window, otherwise the
-		// launched process's threads sit in g_ppu past position N and never
-		// get suspend cleared.
-		while (target && remaining)
+		for (auto target = +g_ppu; target; target = target->next_ppu)
 		{
-			if (target->state & cpu_flag::process_suspended)
+			if (target->owner_pid == 2)
 			{
-				target = target->next_ppu;
+				pid2_count++;
+			}
+		}
+
+		return pid2_count;
+	};
+
+	const bool gamma5_diag_entry = current_ppu && current_ppu->owner_pid != 1;
+	ppu_scheduler_window scheduler_window{};
+
+	if (g_scheduler_ready)
+	{
+		scheduler_window = make_ppu_scheduler_window();
+	}
+
+	if (gamma5_diag_entry && (g_pending || !g_scheduler_ready))
+	{
+		bool in_queue = false;
+
+		for (auto target = +g_ppu; target; target = target->next_ppu)
+		{
+			if (target == current_ppu)
+			{
+				in_queue = true;
+				break;
+			}
+		}
+
+		ppu_log.notice("GAMMA5 schedule_all skipped: caller pid=%u id=0x%x func=%s state=0x%x in_queue=%d pending=%u pending_pid=%u ready=%d",
+			current_ppu->owner_pid, current_ppu->id, current_ppu->current_function ? current_ppu->current_function : "",
+			+current_ppu->state.load(), in_queue, g_pending, g_pending_per_pid[pending_pid_index(current_ppu->owner_pid)], +g_scheduler_ready);
+	}
+
+	if (g_scheduler_ready)
+	{
+		const bool gamma5_diag = gamma5_diag_entry || scheduler_window.contains_pid(2);
+
+		if (gamma5_diag)
+		{
+			ppu_log.notice("GAMMA5 schedule_all: caller pid=%u id=0x%x func=%s state=0x%x in_window=%d pending=%u pending_pid=%u ready=%d pid2_queue=%zu window_count=%zu eligible=%zu",
+				current_ppu ? current_ppu->owner_pid : 0, current_ppu ? current_ppu->id : 0, current_ppu && current_ppu->current_function ? current_ppu->current_function : "",
+				current_ppu ? static_cast<u32>(+current_ppu->state.load()) : 0u, current_ppu && scheduler_window.contains(current_ppu), g_pending,
+				current_ppu ? g_pending_per_pid[pending_pid_index(current_ppu->owner_pid)] : 0, +g_scheduler_ready, count_pid2_ppus(), scheduler_window.count, scheduler_window.eligible_count);
+
+			for (usz i = 0; i < scheduler_window.count; i++)
+			{
+				const ppu_thread* const target = scheduler_window.threads[i];
+				ppu_log.notice("GAMMA5 schedule_all window[%zu]: pid=%u id=0x%x func=%s state=0x%x start=0x%llx",
+					i, target->owner_pid, target->id, target->current_function ? target->current_function : "",
+					+target->state.load(), static_cast<unsigned long long>(target->start_time));
+			}
+		}
+
+		// Wake threads in the selected PPE-sized scheduler window. The window
+		// is owner-pid fair under co-resident execution, so VSH cannot occupy
+		// every slot while a launched game's PPU is runnable.
+		for (usz i = 0; i < scheduler_window.count; i++)
+		{
+			ppu_thread* const target = scheduler_window.threads[i];
+			const u32 target_pending = g_pending_per_pid[pending_pid_index(target->owner_pid)];
+
+			if (target_pending)
+			{
+				if (gamma5_diag)
+				{
+					ppu_log.notice("GAMMA5 schedule_all pid-gated: pid=%u id=0x%x func=%s pending_pid=%u state=0x%x",
+						target->owner_pid, target->id, target->current_function ? target->current_function : "",
+						target_pending, +target->state.load());
+				}
+
 				continue;
 			}
 
@@ -1877,8 +2050,6 @@ void lv2_obj::schedule_all(u64 current_time)
 
 				if ((target->state.fetch_op(AOFN(x += cpu_flag::signal, x -= cpu_flag::suspend, x-= remove_yield, void())) & (cpu_flag::wait + cpu_flag::signal)) != cpu_flag::wait)
 				{
-					target = target->next_ppu;
-					remaining--;
 					continue;
 				}
 
@@ -1892,9 +2063,6 @@ void lv2_obj::schedule_all(u64 current_time)
 					*it++ = &target->state;
 				}
 			}
-
-			target = target->next_ppu;
-			remaining--;
 		}
 	}
 
@@ -2021,19 +2189,19 @@ std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_
 		opt_lock[1].emplace(lv2_obj::g_mutex);
 	}
 
-	u32 pos = umax;
+	u32 queue_pos = umax;
 	u32 i = 0;
 
 	for (auto target = +g_ppu; target; target = target->next_ppu, i++)
 	{
 		if (target == ppu)
 		{
-			pos = i;
+			queue_pos = i;
 			break;
 		}
 	}
 
-	if (pos == umax)
+	if (queue_pos == umax)
 	{
 		if (!ppu->interrupt_thread_executing)
 		{
@@ -2043,12 +2211,15 @@ std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_
 		return { PPU_THREAD_STATUS_SLEEP, 0 };
 	}
 
-	if (pos >= g_cfg.core.ppu_threads + 0u)
+	const ppu_scheduler_window scheduler_window = make_ppu_scheduler_window();
+	const u32 window_pos = scheduler_window.index_of(ppu);
+
+	if (window_pos == umax)
 	{
-		return { PPU_THREAD_STATUS_RUNNABLE, pos };
+		return { PPU_THREAD_STATUS_RUNNABLE, queue_pos };
 	}
 
-	return { PPU_THREAD_STATUS_ONPROC, pos};
+	return { PPU_THREAD_STATUS_ONPROC, window_pos};
 }
 
 void lv2_obj::set_future_sleep(cpu_thread* cpu)
@@ -2066,18 +2237,10 @@ ppu_non_sleeping_count_t lv2_obj::count_non_sleeping_threads()
 {
 	ppu_non_sleeping_count_t total{};
 
-	auto target = atomic_storage<ppu_thread*>::load(g_ppu);
+	const ppu_scheduler_window scheduler_window = make_ppu_scheduler_window();
 
-	for (usz thread_count = g_cfg.core.ppu_threads; target; target = atomic_storage<ppu_thread*>::load(target->next_ppu))
-	{
-		if (total.onproc_count == thread_count)
-		{
-			total.has_running = true;
-			break;
-		}
-
-		total.onproc_count++;
-	}
+	total.onproc_count = ::narrow<u32>(scheduler_window.count);
+	total.has_running = scheduler_window.eligible_count > scheduler_window.count;
 
 	return total;
 }

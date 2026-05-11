@@ -1026,7 +1026,7 @@ namespace rsx
 		template <typename T = void>
 		inline T* get_ptr(u32 address) const
 		{
-			return reinterpret_cast<T*>(vm::g_sudo_addr + address);
+			return reinterpret_cast<T*>(vm::sudo_base() + address);
 		}
 	};
 

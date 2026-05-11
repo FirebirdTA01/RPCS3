@@ -352,7 +352,7 @@ namespace rsx
 			const auto padding = (rsx_pitch - native_pitch) / 8;
 			const auto row_length = (native_pitch) / 8;
 			auto num_rows = (surface_height * samples_y);
-			auto ptr = reinterpret_cast<u64*>(vm::g_sudo_addr + base_addr);
+			auto ptr = reinterpret_cast<u64*>(vm::sudo_base() + base_addr);
 
 			auto col = row_length;
 			u64 result = 0;
@@ -439,7 +439,7 @@ namespace rsx
 		{
 			for (auto &e : memory_tag_samples)
 			{
-				e.second = *reinterpret_cast<nse_t<u64, 1>*>(vm::g_sudo_addr + e.first);
+				e.second = *reinterpret_cast<nse_t<u64, 1>*>(vm::sudo_base() + e.first);
 			}
 		}
 
@@ -452,7 +452,7 @@ namespace rsx
 		{
 			for (const auto& e : memory_tag_samples)
 			{
-				if (e.second != *reinterpret_cast<nse_t<u64, 1>*>(vm::g_sudo_addr + e.first))
+				if (e.second != *reinterpret_cast<nse_t<u64, 1>*>(vm::sudo_base() + e.first))
 					return false;
 			}
 

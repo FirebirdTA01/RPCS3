@@ -1073,9 +1073,9 @@ namespace vk
 				auto data_length = static_cast<u32>(end_addr - base_addr);
 				u64 src_address = 0;
 
-				if (uptr(base_addr) > uptr(vm::g_sudo_addr))
+				if (uptr(base_addr) > uptr(vm::sudo_base()))
 				{
-					src_address = uptr(base_addr) - uptr(vm::g_sudo_addr);
+					src_address = uptr(base_addr) - uptr(vm::sudo_base());
 				}
 				else
 				{

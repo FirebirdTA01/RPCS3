@@ -2324,6 +2324,12 @@ void ppu_thread::cpu_task()
 
 void ppu_thread::cpu_sleep()
 {
+	if (owner_pid != 1)
+	{
+		ppu_log.notice("GAMMA5 cpu_sleep entry: pid=%u id=0x%x func=%s cia=0x%x state=0x%x gpr3=0x%llx",
+			owner_pid, id, current_function ? current_function : "", cia, +state.load(), static_cast<unsigned long long>(gpr[3]));
+	}
+
 	// Clear reservation
 	raddr = 0;
 

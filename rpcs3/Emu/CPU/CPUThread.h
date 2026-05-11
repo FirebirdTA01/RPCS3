@@ -56,6 +56,7 @@ public:
 	u64 block_hash = 0;
 	u8* memory_base_addr = nullptr; // Set by derived class constructors from vm::g_base_addr
 	u8* exec_base_addr = nullptr;   // Set in cpu_thread ctor from vm::g_exec_addr (PPU dispatch table)
+	u8* sudo_base_addr = nullptr;   // sudo (kernel-visible) view; mirrors memory_base_addr
 	atomic_t<u8>* page_flags = nullptr; // Cached pointer to owner process's vm_handle::page_flags
 	u32 owner_pid = 1; // Process ID that owns this thread (default: primary process)
 

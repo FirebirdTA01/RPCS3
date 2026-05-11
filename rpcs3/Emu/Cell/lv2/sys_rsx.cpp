@@ -42,6 +42,18 @@ static u64 rsx_timeStamp()
 
 static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 {
+	const auto cpu = cpu_thread::get_current();
+	const u32 caller_pid = cpu ? cpu->owner_pid : Emu.current_process().pid();
+	const bool gamma8_diag = caller_pid != 1;
+
+	if (gamma8_diag)
+	{
+		sys_rsx.notice("GAMMA8 set_rsx_dmactl enter: caller_pid=%u active_pid=%u render=%p render_pid=%u get_put=0x%llx old_new_get_put=0x%llx mask=0x%x fifo=%p dma=0x%x",
+			caller_pid, Emu.current_process().pid(), static_cast<void*>(render), render ? render->owner_pid : 0,
+			get_put, render ? +render->new_get_put : umax, render ? +render->m_eng_interrupt_mask : 0,
+			render && render->fifo_ctrl ? static_cast<void*>(render->fifo_ctrl.get()) : nullptr, render ? render->dma_address : 0);
+	}
+
 	{
 		rsx::eng_lock rlock(render);
 		render->fifo_ctrl->abort();
@@ -65,13 +77,27 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 
 		// Schedule FIFO interrupt to deal with this immediately
 		render->m_eng_interrupt_mask |= rsx::dma_control_interrupt;
+
+		if (gamma8_diag)
+		{
+			sys_rsx.notice("GAMMA8 set_rsx_dmactl queued: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x",
+				caller_pid, static_cast<void*>(render), render->owner_pid, +render->new_get_put, +render->m_eng_interrupt_mask);
+		}
 	}
 
-	if (auto cpu = cpu_thread::get_current())
+	if (cpu)
 	{
+		u32 wait_iters = 0;
+
 		// Wait for the first store to complete (or be aborted)
 		while (render->new_get_put != usz{umax})
 		{
+			if (gamma8_diag && (wait_iters++ % 1000) == 0)
+			{
+				sys_rsx.notice("GAMMA8 set_rsx_dmactl wait: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x state=0x%x",
+					caller_pid, static_cast<void*>(render), render->owner_pid, +render->new_get_put, +render->m_eng_interrupt_mask, +cpu->state);
+			}
+
 			if (cpu->state & cpu_flag::exit)
 			{
 				if (render->new_get_put.compare_and_swap_test(get_put, umax))
@@ -83,6 +109,12 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 			}
 
 			thread_ctrl::wait_for(1000);
+		}
+
+		if (gamma8_diag)
+		{
+			sys_rsx.notice("GAMMA8 set_rsx_dmactl done: caller_pid=%u render=%p render_pid=%u new_get_put=0x%llx mask=0x%x state=0x%x",
+				caller_pid, static_cast<void*>(render), render->owner_pid, +render->new_get_put, +render->m_eng_interrupt_mask, +cpu->state);
 		}
 	}
 }
@@ -328,6 +360,13 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	render->current_display_buffer = 0;
 	render->label_addr = vm::cast(*lpar_reports);
 	render->init(dma_address);
+	if (const auto old = render->state.fetch_op([](bs_t<cpu_flag>& state)
+	{
+		state -= cpu_flag::stop + cpu_flag::again;
+	}); old & (cpu_flag::stop + cpu_flag::again))
+	{
+		render->state.notify_one();
+	}
 
 	*context_id = 0x55555555;
 
@@ -435,7 +474,13 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u32 io, u32 ea
 
 	io >>= 20, ea >>= 20, size >>= 20;
 
-	rsx::eng_lock fifo_lock(render);
+	std::optional<rsx::eng_lock> fifo_lock;
+
+	if (render->is_initialized)
+	{
+		fifo_lock.emplace(render);
+	}
+
 	std::scoped_lock lock(render->sys_rsx_mtx);
 
 	for (u32 i = 0; i < size; i++)

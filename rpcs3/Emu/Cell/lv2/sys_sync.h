@@ -511,6 +511,20 @@ public:
 	static atomic_t<u64> g_priority_order_tag;
 
 private:
+	struct ppu_scheduler_window
+	{
+		static constexpr usz max_threads = 8; // g_cfg.core.ppu_threads max
+
+		class ppu_thread* threads[max_threads]{};
+		usz count = 0;
+		usz eligible_count = 0;
+
+		bool contains(const class ppu_thread* ppu) const;
+		bool contains_pid(u32 pid) const;
+		u32 index_of(const class ppu_thread* ppu) const;
+		void append(class ppu_thread* ppu);
+	};
+
 	// Pending list of threads to run
 	static thread_local std::vector<class cpu_thread*> g_to_awake;
 
@@ -519,6 +533,7 @@ private:
 
 	// Waiting for the response from
 	static u32 g_pending;
+	static u32 g_pending_per_pid[3];
 
 	// Pending list of threads to notify (cpu_thread::state ptr)
 	static thread_local std::add_pointer_t<const void> g_to_notify[4];
@@ -526,5 +541,8 @@ private:
 	// If a notify_all_t object exists locally, postpone notifications to the destructor of it (not recursive, notifies on the first destructor for safety)
 	static thread_local bool g_postpone_notify_barrier;
 
+	static bool is_ppu_scheduler_eligible(const class ppu_thread* ppu);
+	static u32 pending_pid_index(u32 owner_pid);
+	static ppu_scheduler_window make_ppu_scheduler_window();
 	static void schedule_all(u64 current_time = 0);
 };

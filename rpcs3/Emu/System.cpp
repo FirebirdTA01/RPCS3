@@ -2792,7 +2792,8 @@ void Emulator::RunPPU()
 			return;
 		}
 
-		if (!cpu.state.test_and_reset(cpu_flag::stop))
+		const bool had_stop = cpu.state.test_and_reset(cpu_flag::stop);
+		if (!had_stop && !(cpu.state & cpu_flag::suspend))
 		{
 			return;
 		}
@@ -2802,8 +2803,13 @@ void Emulator::RunPPU()
 		// awake/g_ppu insertion path until the thread itself sleeps once, so
 		// the LV2 scheduler never reaches it via schedule_all and suspend
 		// stays set forever — parking the thread in cpu_wait at the first
-		// state check inside exec_task. Clearing it here lets the freshly
-		// stop-cleared thread run immediately.
+		// state check inside exec_task. Clearing here covers both the
+		// original run-then-clear case and the multi-fire racing case where
+		// stop was already cleared by a parallel RunPPU caller (co-resident
+		// lv2_exitspawn explicit RunPPU plus rsx::thread's queued
+		// CallFromMainThread RunPPU). Without this, the second arriving
+		// RunPPU previously skipped the suspend clear, leaving the launched
+		// main_thread parked.
 		cpu.state -= cpu_flag::suspend;
 
 		cpu.state.notify_one();
@@ -5004,7 +5010,7 @@ u32 Emulator::create_process()
 	return 2; // pid = 2 (pid 1 is primary)
 }
 
-void Emulator::set_active_process(u32 pid)
+void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
 {
 	const u32 idx = pid - 1; // pid 1 → index 0, pid 2 → index 1
 	ensure(idx < m_processes.size());
@@ -5016,12 +5022,16 @@ void Emulator::set_active_process(u32 pid)
 	}
 
 	sys_log.notice("set_active_process: switching from pid %u to pid %u", m_active_process_index + 1, pid);
+	sys_log.notice("set_active_process: suspend_outgoing=%d", suspend_outgoing ? 1 : 0);
 
 	// Take exclusive lock — prevents concurrent guest-memory reads during swap
 	std::unique_lock lock(m_vm_swap_mutex);
 
 	// Suspend outgoing process's PPU/SPU threads (they must stop before pointers change)
-	suspend_process(m_active_process_index + 1);
+	if (suspend_outgoing)
+	{
+		suspend_process(m_active_process_index + 1);
+	}
 
 	// RSX pause/unpause is per-process. Each rsx::thread is constructed
 	// with m_rsx_state pointing to its own process's rsx_ctx and its
@@ -5030,10 +5040,13 @@ void Emulator::set_active_process(u32 pid)
 	// thread before the VM swap, then unpause the incoming one after.
 	if (auto* out_rsx = m_processes[m_active_process_index].local_fxo().try_get<rsx::thread>())
 	{
-		// out_rsx->pause() blocks until the rsx::thread acks via its own
-		// wait_pause poll. Do NOT call wait_pause from this thread — it
-		// spins until unpause and deadlocks.
-		out_rsx->pause();
+		if (suspend_outgoing)
+		{
+			// out_rsx->pause() blocks until the rsx::thread acks via its own
+			// wait_pause poll. Do NOT call wait_pause from this thread — it
+			// spins until unpause and deadlocks.
+			out_rsx->pause();
+		}
 	}
 
 	// Swap VM globals. Non-RSX system threads that read vm::g_* without

@@ -824,6 +824,7 @@ cpu_thread::cpu_thread(u32 id)
 	// regardless of the global's current value.
 	memory_base_addr = vm::g_base_addr;
 	exec_base_addr = vm::g_exec_addr;
+	sudo_base_addr = vm::g_sudo_addr;
 	page_flags = vm::g_pages;
 	while (Emu.GetStatus() == system_state::paused)
 	{

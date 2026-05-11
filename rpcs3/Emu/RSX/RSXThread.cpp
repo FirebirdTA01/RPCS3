@@ -722,6 +722,13 @@ namespace rsx
 
 		fifo_ctrl = std::make_unique<::rsx::FIFO::FIFO_control>(this);
 
+		// Initialize zcull_ctrl with a stub so any cross-thread access during
+		// early lifetime never sees a null pointer. VKGSRender::on_init_thread
+		// and GLGSRender::on_init_thread will reset this unique_ptr to their
+		// own ZCULL_control subobject via multiple inheritance; reset deletes
+		// the stub and adopts the new pointer cleanly.
+		zcull_ctrl = std::make_unique<::rsx::reports::ZCULL_control>();
+
 		if (g_cfg.misc.use_native_interface && (g_cfg.video.renderer == video_renderer::opengl || g_cfg.video.renderer == video_renderer::vulkan))
 		{
 			m_overlay_manager = fxo::init<rsx::overlays::display_manager>(0);
@@ -737,7 +744,7 @@ namespace rsx
 
 		if (!_ar)
 		{
-			add_remove_flags({}, cpu_flag::stop); // TODO: Remove workaround
+			add_remove_flags({}, cpu_flag::stop + cpu_flag::again); // TODO: Remove workaround
 			return;
 		}
 
@@ -1042,6 +1049,13 @@ namespace rsx
 
 		fxo::get<vblank_thread>().set_thread(std::shared_ptr<named_thread<std::function<void()>>>(new named_thread<std::function<void()>>("VBlank Thread"sv, [this]() -> void
 		{
+			// Bind this VBlank thread to its owning rsx::thread's process so
+			// sys_rsx_context_attribute and other process-local lookups address
+			// the right local_fxo under co-resident execution.
+			id_manager::g_host_thread_owner_pid = this->owner_pid;
+			vm::g_host_thread_vm_base = this->memory_base_addr;
+			vm::g_host_thread_sudo_base = this->sudo_base_addr;
+
 #ifdef __linux__
 			constexpr u32 host_min_quantum = 10;
 #else
@@ -1282,9 +1296,23 @@ namespace rsx
 
 			if (m_eng_interrupt_mask & rsx::dma_control_interrupt && !is_stopped())
 			{
+				if (owner_pid != 1)
+				{
+					rsx_log.notice("GAMMA8 dma_control_interrupt enter: render=%p owner_pid=%u new_get_put=0x%llx mask=0x%x fifo=%p dma=0x%x",
+						static_cast<void*>(this), owner_pid, +new_get_put, +m_eng_interrupt_mask,
+						fifo_ctrl ? static_cast<void*>(fifo_ctrl.get()) : nullptr, dma_address);
+				}
+
 				if (const u64 get_put = new_get_put.exchange(u64{umax});
 					get_put != umax)
 				{
+					if (owner_pid != 1)
+					{
+						rsx_log.notice("GAMMA8 dma_control_interrupt consume: render=%p owner_pid=%u get_put=0x%llx dma_put_addr=0x%x fifo=%p",
+							static_cast<void*>(this), owner_pid, get_put, dma_address + ::offset32(&RsxDmaControl::put),
+							fifo_ctrl ? static_cast<void*>(fifo_ctrl.get()) : nullptr);
+					}
+
 					vm::_ptr<atomic_be_t<u64>>(dma_address + ::offset32(&RsxDmaControl::put))->release(get_put);
 					fifo_ctrl->set_get(static_cast<u32>(get_put));
 					fifo_ctrl->abort();
@@ -1292,8 +1320,20 @@ namespace rsx
 					last_known_code_start = static_cast<u32>(get_put);
 					sync_point_request.release(true);
 				}
+				else if (owner_pid != 1)
+				{
+					rsx_log.notice("GAMMA8 dma_control_interrupt empty: render=%p owner_pid=%u mask=0x%x fifo=%p",
+						static_cast<void*>(this), owner_pid, +m_eng_interrupt_mask,
+						fifo_ctrl ? static_cast<void*>(fifo_ctrl.get()) : nullptr);
+				}
 
 				m_eng_interrupt_mask.clear(rsx::dma_control_interrupt);
+
+				if (owner_pid != 1)
+				{
+					rsx_log.notice("GAMMA8 dma_control_interrupt exit: render=%p owner_pid=%u new_get_put=0x%llx mask=0x%x last_known=0x%x",
+						static_cast<void*>(this), owner_pid, +new_get_put, +m_eng_interrupt_mask, last_known_code_start);
+				}
 			}
 		}
 
@@ -2558,6 +2598,8 @@ namespace rsx
 
 	void thread::check_zcull_status(bool framebuffer_swap)
 	{
+		if (!zcull_ctrl) return;
+
 		const bool zcull_rendering_enabled = !!method_registers.registers[NV4097_SET_ZCULL_EN];
 		const bool zcull_stats_enabled = !!method_registers.registers[NV4097_SET_ZCULL_STATS_ENABLE];
 		const bool zcull_pixel_cnt_enabled = !!method_registers.registers[NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE];
@@ -2593,6 +2635,7 @@ namespace rsx
 
 	void thread::clear_zcull_stats(u32 type)
 	{
+		if (!zcull_ctrl) return;
 		zcull_ctrl->clear(this, type);
 	}
 
@@ -2673,7 +2716,7 @@ namespace rsx
 
 		mm_flush();
 
-		if (zcull_ctrl->has_pending())
+		if (zcull_ctrl && zcull_ctrl->has_pending())
 		{
 			zcull_ctrl->sync(this);
 		}
@@ -2691,6 +2734,7 @@ namespace rsx
 
 	void thread::sync_hint(FIFO::interrupt_hint /*hint*/, rsx::reports::sync_hint_payload_t payload)
 	{
+		if (!zcull_ctrl) return;
 		zcull_ctrl->on_sync_hint(payload);
 	}
 
@@ -3072,8 +3116,17 @@ namespace rsx
 				hle_lock->unlock();
 			}
 
-			// Pause RSX thread momentarily to handle unmapping
-			eng_lock elock(this);
+			// Pause RSX thread momentarily to handle unmapping once its main
+			// loop can acknowledge external interrupts. Co-resident process
+			// startup can reach this path before on_task/on_init_thread runs;
+			// in that window just queue the invalidation for the first local
+			// task pass instead of waiting forever for an ack.
+			std::optional<eng_lock> elock;
+
+			if (is_initialized)
+			{
+				elock.emplace(this);
+			}
 
 			// Queue up memory invalidation
 			std::lock_guard lock(m_mtx_task);

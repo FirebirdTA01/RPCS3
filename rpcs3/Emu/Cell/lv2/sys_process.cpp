@@ -477,7 +477,7 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 					hdd1 = std::move(hdd1), klic, argv = std::move(argv), envp = std::move(envp),
 					data = std::move(data)]() mutable
 				{
-					Emu.set_active_process(game_pid); // Switches to process[1], suspends VSH
+					Emu.set_active_process(game_pid, /*suspend_outgoing=*/false); // Co-resident: keep VSH alive while game runs
 
 					Emu.current_process().RefArgv() = std::move(argv);
 					Emu.current_process().RefEnvp() = std::move(envp);

@@ -240,6 +240,22 @@ public:
 	lv2_process& current_process() { return m_processes[m_active_process_index]; }
 	const lv2_process& current_process() const { return m_processes[m_active_process_index]; }
 
+	// Look up a process by pid (1-indexed: pid 1 -> slot 0, pid 2 -> slot 1).
+	// Used by fxo / idm routing to direct process-local lookups to the
+	// calling thread's owner process under co-resident execution.
+	lv2_process& process_by_pid(u32 pid)
+	{
+		const u32 idx = pid - 1;
+		ensure(idx < m_processes.size());
+		return m_processes[idx];
+	}
+	const lv2_process& process_by_pid(u32 pid) const
+	{
+		const u32 idx = pid - 1;
+		ensure(idx < m_processes.size());
+		return m_processes[idx];
+	}
+
 	// Get VM base for a specific process (system threads use this for their owner)
 	u8* get_process_vm_base(u32 pid) const
 	{
@@ -249,7 +265,7 @@ public:
 
 	// Multi-process API (debug-only — not yet exposed via PS3 syscalls)
 	u32 create_process();
-	void set_active_process(u32 pid);
+	void set_active_process(u32 pid, bool suspend_outgoing = true);
 	u32 GetInputForegroundPid() const { return m_input_foreground_pid; }
 	void SetInputForegroundPid(u32 pid) { m_input_foreground_pid = pid; }
 	void suspend_process(u32 pid);

@@ -14,6 +14,7 @@
 #include "util/shared_ptr.hpp"
 #include "util/fixed_typemap.hpp"
 #include "Emu/System.h"
+#include "Emu/CPU/CPUThread.h"
 
 // Forward declarations for trait propagation.
 template <typename T, typename K> class ipc_manager;
@@ -113,6 +114,13 @@ namespace id_manager
 		seen[idx >> 6] |= mask;
 		log_dispatch_first_seen(dispatch_type_name<T>(), to_local_fxo, origin);
 	}
+
+	// Host-thread fallback for fxo/idm routing under co-resident execution.
+	// Host threads (no cpu_thread context) operating on behalf of a guest
+	// process should set this on entry so process-local lookups resolve to
+	// that process's local_fxo. 0 = use current_process() (today's
+	// behavior, kept for unbound host threads).
+	inline thread_local u32 g_host_thread_owner_pid = 0;
 }
 
 // Compile-time-dispatched fxo accessor. Process-local types route to the
@@ -127,7 +135,20 @@ namespace fxo
 		id_manager::trace_dispatch<T>(to_local, "fxo");
 
 		if constexpr (to_local)
+		{
+			// Route to the calling thread's owner process when on a guest
+			// thread so concurrent threads from different processes see
+			// their own local_fxo. For host threads with no cpu_thread
+			// context, fall back to the host-thread TLS pid if set (host
+			// threads serving a specific guest process set this on entry).
+			// Last resort: current_process() — preserves single-active-process
+			// behavior for unbound host threads.
+			if (auto* cpu = get_current_cpu_thread())
+				return Emu.process_by_pid(cpu->owner_pid).local_fxo();
+			if (id_manager::g_host_thread_owner_pid != 0)
+				return Emu.process_by_pid(id_manager::g_host_thread_owner_pid).local_fxo();
 			return Emu.current_process().local_fxo();
+		}
 		else
 			return *g_fxo;
 	}
@@ -558,7 +579,13 @@ class idm
 		id_manager::trace_dispatch<T>(to_local, "idm");
 
 		if constexpr (to_local)
+		{
+			if (auto* cpu = get_current_cpu_thread())
+				return Emu.process_by_pid(cpu->owner_pid).local_fxo();
+			if (id_manager::g_host_thread_owner_pid != 0)
+				return Emu.process_by_pid(id_manager::g_host_thread_owner_pid).local_fxo();
 			return Emu.current_process().local_fxo();
+		}
 		else
 			return *g_fxo;
 	}

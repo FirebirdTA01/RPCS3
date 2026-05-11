@@ -9,6 +9,7 @@
 #include "Thread.h"
 #include "Utilities/JIT.h"
 #include <cfenv>
+#include "stack_trace.h"
 
 #ifdef ARCH_ARM64
 #include "Emu/CPU/Backends/AArch64/AArch64Signal.h"
@@ -25,7 +26,6 @@
 #include <process.h>
 #include <sysinfoapi.h>
 
-#include "stack_trace.h"
 #include "util/dyn_lib.hpp"
 
 DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDescription", HRESULT(HANDLE hThread, PCWSTR lpThreadDescription));
@@ -2134,6 +2134,18 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 	}
 
 	append_thread_name(msg);
+
+	// Host stack trace (mirrors the Windows exception_handler dump). Useful for
+	// identifying null-deref sites under multi-process bring-up; libc backtrace()
+	// is technically not fully async-signal-safe but matches the existing Windows
+	// path's behavior, and the process is about to die anyway.
+	const auto stack_trace = utils::get_backtrace(64);
+	const auto stack_symbols = utils::get_backtrace_symbols(stack_trace);
+	msg += "Host Stack Trace:\n";
+	for (const auto& symbol : stack_symbols)
+	{
+		fmt::append(msg, "  %s\n", symbol);
+	}
 
 	sys_log.fatal("\n%s", msg);
 	sys_log.notice("\n%s", dump_useful_thread_info());

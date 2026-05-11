@@ -74,6 +74,15 @@ namespace vm
 	extern atomic_t<u64, 128>* g_range_lock_set;
 	extern atomic_t<u64, 128>* g_range_lock_bits;
 
+	// Host-thread fallback for guest-pointer translation under co-resident
+	// execution. Mirrors id_manager::g_host_thread_owner_pid: host threads
+	// (no cpu_thread context) operating on behalf of a guest process should
+	// set this on entry so guest memory access lands on that process's VM,
+	// not the active one's. nullptr = use g_base_addr (today's behavior,
+	// kept for unbound host threads).
+	inline thread_local u8* g_host_thread_vm_base = nullptr;
+	inline thread_local u8* g_host_thread_sudo_base = nullptr;
+
 	static constexpr u64 g_exec_addr_seg_offset = 0x2'0000'0000ULL;
 
 	struct writer_lock;
@@ -300,14 +309,20 @@ namespace vm
 	inline void* base(T addr)
 	{
 		auto* cpu = get_current_cpu_thread();
-		u8* base = cpu ? cpu->memory_base_addr : g_base_addr;
+		u8* base;
+		if (cpu)                         base = cpu->memory_base_addr;
+		else if (g_host_thread_vm_base)  base = g_host_thread_vm_base;
+		else                             base = g_base_addr;
 		return base + static_cast<u32>(vm::cast(addr));
 	}
 
 	inline const u8& read8(u32 addr)
 	{
 		auto* cpu = get_current_cpu_thread();
-		u8* base = cpu ? cpu->memory_base_addr : g_base_addr;
+		u8* base;
+		if (cpu)                         base = cpu->memory_base_addr;
+		else if (g_host_thread_vm_base)  base = g_host_thread_vm_base;
+		else                             base = g_base_addr;
 		return base[addr];
 	}
 
@@ -318,7 +333,10 @@ namespace vm
 #endif
 	{
 		auto* cpu = get_current_cpu_thread();
-		u8* base = cpu ? cpu->memory_base_addr : g_base_addr;
+		u8* base;
+		if (cpu)                         base = cpu->memory_base_addr;
+		else if (g_host_thread_vm_base)  base = g_host_thread_vm_base;
+		else                             base = g_base_addr;
 		base[addr] = value;
 
 #ifdef RPCS3_HAS_MEMORY_BREAKPOINTS
@@ -328,6 +346,16 @@ namespace vm
 			ppubreak(*ppu);
 		}
 #endif
+	}
+
+	// sudo (kernel-visible) view helper — mirrors base() resolution:
+	// per-thread cache first, then host-thread TLS, then global.
+	inline u8* sudo_base()
+	{
+		auto* cpu = get_current_cpu_thread();
+		if (cpu) return cpu->sudo_base_addr;
+		if (g_host_thread_sudo_base) return g_host_thread_sudo_base;
+		return g_sudo_addr;
 	}
 
 	// Read or write virtual memory in a safe manner, returns false on failure
