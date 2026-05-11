@@ -138,6 +138,47 @@ void fmt_class_string<typename ppu_thread::call_history_t>::format(std::string& 
 	}
 }
 
+static bool ppu_check_thread_addr(const cpu_thread& cpu, u32 addr, u8 flags = vm::page_readable, u32 size = 1)
+{
+	if (!size || addr + size - 1 < addr)
+	{
+		return false;
+	}
+
+	atomic_t<u8>* pages = cpu.page_flags ? cpu.page_flags : vm::g_pages;
+
+	if (!pages)
+	{
+		return false;
+	}
+
+	const u32 page0 = addr / 4096;
+	const u32 page1 = (addr + size - 1) / 4096;
+
+	for (u32 page = page0; page <= page1; page++)
+	{
+		if (~pages[page] & (flags | vm::page_allocated))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static u8* ppu_thread_sudo_ptr(const cpu_thread& cpu, u32 addr)
+{
+	return (cpu.sudo_base_addr ? cpu.sudo_base_addr : vm::g_sudo_addr) + addr;
+}
+
+template <typename T>
+static T ppu_thread_read_sudo(const cpu_thread& cpu, u32 addr)
+{
+	T value{};
+	std::memcpy(&value, ppu_thread_sudo_ptr(cpu, addr), sizeof(T));
+	return value;
+}
+
 template <>
 void fmt_class_string<typename ppu_thread::syscall_history_t>::format(std::string& out, u64 arg)
 {
@@ -1386,7 +1427,7 @@ void ppu_thread::dump_regs(std::string& ret, std::any& custom_data) const
 		func_data = ensure(std::any_cast<dump_registers_data_t>(&custom_data));
 	}
 
-	PPUDisAsm dis_asm(cpu_disasm_mode::normal, vm::g_sudo_addr);
+	PPUDisAsm dis_asm(cpu_disasm_mode::normal, sudo_base_addr ? sudo_base_addr : vm::g_sudo_addr);
 
 	for (uint i = 0; i < 32; ++i)
 	{
@@ -1440,25 +1481,27 @@ void ppu_thread::dump_regs(std::string& ret, std::any& custom_data) const
 		constexpr u32 max_str_len = 32;
 		constexpr u32 hex_count = 8;
 
-		if (reg <= u32{umax} && vm::check_addr<max_str_len>(static_cast<u32>(reg)))
+		if (reg <= u32{umax} && ppu_check_thread_addr(*this, static_cast<u32>(reg), vm::page_readable, max_str_len))
 		{
 			bool is_function = false;
 			u32 toc = 0;
 
 			auto is_exec_code = [&](u32 addr)
 			{
-				return addr % 4 == 0 && vm::check_addr(addr, vm::page_executable) && g_ppu_itype.decode(*vm::get_super_ptr<u32>(addr)) != ppu_itype::UNK;
-			};
+				return addr % 4 == 0 && ppu_check_thread_addr(*this, addr, vm::page_executable, 4) &&
+						g_ppu_itype.decode(ppu_thread_read_sudo<be_t<u32>>(*this, addr)) != ppu_itype::UNK;
+				};
 
-			if (const u32 reg_ptr = *vm::get_super_ptr<be_t<u32, 1>>(static_cast<u32>(reg));
-				vm::check_addr<8>(reg_ptr) && !vm::check_addr(toc, vm::page_executable))
+			if (const u32 reg_ptr = ppu_thread_read_sudo<be_t<u32, 1>>(*this, static_cast<u32>(reg));
+				ppu_check_thread_addr(*this, reg_ptr, vm::page_readable, 8) && !ppu_check_thread_addr(*this, toc, vm::page_executable, 1))
 			{
 				// Check executability and alignment
 				if (reg % 4 == 0 && is_exec_code(reg_ptr))
 				{
-					toc = *vm::get_super_ptr<u32>(static_cast<u32>(reg + 4));
+					toc = ppu_thread_read_sudo<be_t<u32>>(*this, static_cast<u32>(reg + 4));
 
-					if (toc % 4 == 0 && (toc >> 29) == (reg_ptr >> 29) && vm::check_addr(toc) && !vm::check_addr(toc, vm::page_executable))
+					if (toc % 4 == 0 && (toc >> 29) == (reg_ptr >> 29) &&
+						ppu_check_thread_addr(*this, toc) && !ppu_check_thread_addr(*this, toc, vm::page_executable, 1))
 					{
 						is_function = true;
 						reg = reg_ptr;
@@ -1470,7 +1513,7 @@ void ppu_thread::dump_regs(std::string& ret, std::any& custom_data) const
 				is_function = true;
 			}
 
-			const auto gpr_buf = vm::get_super_ptr<u8>(static_cast<u32>(reg));
+			const auto gpr_buf = ppu_thread_sudo_ptr(*this, static_cast<u32>(reg));
 
 			std::string buf_tmp(gpr_buf, gpr_buf + max_str_len);
 
@@ -1666,7 +1709,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 
 	const u32 stack_ptr = static_cast<u32>(r1);
 
-	if (!vm::check_addr(stack_ptr, vm::page_writable))
+	if (!ppu_check_thread_addr(*this, stack_ptr, vm::page_writable))
 	{
 		// Normally impossible unless the code does not follow ABI rules
 		return {};
@@ -1675,12 +1718,12 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 	u32 stack_min = stack_ptr & ~0xfff;
 	u32 stack_max = stack_min + 4096;
 
-	while (stack_min && vm::check_addr(stack_min - 4096, vm::page_writable))
+	while (stack_min && ppu_check_thread_addr(*this, stack_min - 4096, vm::page_writable))
 	{
 		stack_min -= 4096;
 	}
 
-	while (stack_max + 4096 && vm::check_addr(stack_max, vm::page_writable))
+	while (stack_max + 4096 && ppu_check_thread_addr(*this, stack_max, vm::page_writable))
 	{
 		stack_max += 4096;
 	}
@@ -1700,9 +1743,9 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 		is_first = false
 		)
 	{
-		auto is_invalid = [](u64 addr)
+		auto is_invalid = [this](u64 addr)
 		{
-			if (addr > u32{umax} || addr % 4 || !vm::check_addr(static_cast<u32>(addr), vm::page_executable))
+			if (addr > u32{umax} || addr % 4 || !ppu_check_thread_addr(*this, static_cast<u32>(addr), vm::page_executable, 4))
 			{
 				return true;
 			}
@@ -1743,7 +1786,13 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 
 						inst_neg.resize(new_size);
 
-						if (!vm::try_access(inst_bound, &inst_neg[old_size], ::narrow<u32>((new_size - old_size) * sizeof(be_t<u32>)), false))
+						const u32 read_size = ::narrow<u32>((new_size - old_size) * sizeof(be_t<u32>));
+
+						if (ppu_check_thread_addr(*this, inst_bound, vm::page_readable, read_size))
+						{
+							std::memcpy(&inst_neg[old_size], ppu_thread_sudo_ptr(*this, inst_bound), read_size);
+						}
+						else
 						{
 							// Failure (this would be detected as failure by zeroes)
 						}
@@ -1776,7 +1825,13 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 
 					inst_pos.resize(new_size);
 
-					if (!vm::try_access(pos, &inst_pos[old_size], ::narrow<u32>((new_size - old_size) * sizeof(be_t<u32>)), false))
+					const u32 read_size = ::narrow<u32>((new_size - old_size) * sizeof(be_t<u32>));
+
+					if (ppu_check_thread_addr(*this, pos, vm::page_readable, read_size))
+					{
+						std::memcpy(&inst_pos[old_size], ppu_thread_sudo_ptr(*this, pos), read_size);
+					}
+					else
 					{
 						// Failure (this would be detected as failure by zeroes)
 					}
@@ -1806,7 +1861,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 
 			for (; start < workload.size(); start++)
 			{
-				for (u32 wa = workload[start].start_point; vm::check_addr(wa, vm::page_executable);)
+				for (u32 wa = workload[start].start_point; ppu_check_thread_addr(*this, wa, vm::page_executable, 4);)
 				{
 					be_t<u32>& opcode = get_inst(wa);
 
@@ -1963,7 +2018,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 							continue;
 						}
 
-						if (vm::check_addr(route_pc, vm::page_executable) && get_inst(route_pc))
+						if (ppu_check_thread_addr(*this, route_pc, vm::page_executable, 4) && get_inst(route_pc))
 						{
 							if (proceeded)
 							{
@@ -2004,7 +2059,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 
 			if (res.about_to_pop_frame || (res.maybe_leaf && !res.non_leaf))
 			{
-				const u64 temp_sp = *vm::get_super_ptr<u64>(static_cast<u32>(sp));
+				const u64 temp_sp = ppu_thread_read_sudo<be_t<u64>>(*this, static_cast<u32>(sp));
 
 				if (temp_sp <= sp)
 				{
@@ -2018,7 +2073,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 			}
 		}
 
-		u64 addr = *vm::get_super_ptr<u64>(static_cast<u32>(sp + 16));
+		u64 addr = ppu_thread_read_sudo<be_t<u64>>(*this, static_cast<u32>(sp + 16));
 
 		if (skip_single_frame)
 		{
@@ -2034,7 +2089,7 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 			break;
 		}
 
-		const u64 temp_sp = *vm::get_super_ptr<u64>(static_cast<u32>(sp));
+		const u64 temp_sp = ppu_thread_read_sudo<be_t<u64>>(*this, static_cast<u32>(sp));
 
 		if (temp_sp <= sp)
 		{
