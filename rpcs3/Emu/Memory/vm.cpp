@@ -129,9 +129,66 @@ namespace vm
 	atomic_t<u64, 128>*       g_range_lock_bits = Emu.current_process().vm_handle().range_lock_bits;
 	std::vector<std::shared_ptr<block_t>>* g_locations = &Emu.current_process().vm_handle().locations;
 
+	thread_local vm_handle* g_target_vm_handle = nullptr;
+
+	vm_handle& get_target_vm_handle()
+	{
+		return g_target_vm_handle ? *g_target_vm_handle : get_active_vm_handle();
+	}
+
+	u8* get_target_base_addr()
+	{
+		return g_target_vm_handle ? g_target_vm_handle->base_addr : g_base_addr;
+	}
+
+	u8* get_target_sudo_addr()
+	{
+		return g_target_vm_handle ? g_target_vm_handle->sudo_addr : g_sudo_addr;
+	}
+
+	u8* get_target_exec_addr()
+	{
+		return g_target_vm_handle ? g_target_vm_handle->exec_addr : g_exec_addr;
+	}
+
+	atomic_t<u64>* get_target_shmem()
+	{
+		return g_target_vm_handle ? g_target_vm_handle->shmem : g_shmem;
+	}
+
+	atomic_t<u64, 128>* get_target_range_lock_set()
+	{
+		return g_target_vm_handle ? g_target_vm_handle->range_lock_set : g_range_lock_set;
+	}
+
+	atomic_t<u64, 128>* get_target_range_lock_bits()
+	{
+		return g_target_vm_handle ? g_target_vm_handle->range_lock_bits : g_range_lock_bits;
+	}
+
+	std::vector<std::shared_ptr<block_t>>* get_target_locations()
+	{
+		return g_target_vm_handle ? &g_target_vm_handle->locations : g_locations;
+	}
+
+	struct scoped_vm_handle
+	{
+		vm_handle* old = g_target_vm_handle;
+
+		explicit scoped_vm_handle(vm_handle& handle) noexcept
+		{
+			g_target_vm_handle = &handle;
+		}
+
+		~scoped_vm_handle() noexcept
+		{
+			g_target_vm_handle = old;
+		}
+	};
+
 	auto& get_range_lock_bits(bool is_exclusive_range)
 	{
-		return g_range_lock_bits[+is_exclusive_range];
+		return get_target_range_lock_bits()[+is_exclusive_range];
 	}
 
 	std::pair<bool, u64> try_reservation_update(u32 addr)
@@ -208,7 +265,7 @@ namespace vm
 			fmt::throw_exception("Out of range lock bits");
 		}
 
-		return &g_range_lock_set[std::countr_one(bits)];
+		return &get_target_range_lock_set()[std::countr_one(bits)];
 	}
 
 	template <typename F>
@@ -227,7 +284,7 @@ namespace vm
 
 		for (u64 i = 0;; i++)
 		{
-			const u64 is_share = g_shmem[begin >> 16].load();
+			const u64 is_share = get_target_shmem()[begin >> 16].load();
 
 			const u64 busy = for_all_range_locks(get_range_lock_bits(true), [&](u64 addr_exec, u32 size_exec)
 			{
@@ -246,7 +303,7 @@ namespace vm
 				size_exec = (size_exec << range_bits) >> range_bits;
 
 				// TODO (currently not possible): handle 2 64K pages (inverse range), or more pages
-				if (u64 is_shared = g_shmem[addr_exec >> 16]) [[unlikely]]
+				if (u64 is_shared = get_target_shmem()[addr_exec >> 16]) [[unlikely]]
 				{
 					addr_exec = static_cast<u16>(addr_exec) | is_shared;
 				}
@@ -270,7 +327,7 @@ namespace vm
 
 				for (u32 i = begin / 4096, max = (begin + size - 1) / 4096; i <= max; i++)
 				{
-					if (!(get_active_vm_handle().page_flags[i] & (vm::page_readable)))
+					if (!(get_target_vm_handle().page_flags[i] & (vm::page_readable)))
 					{
 						test = i * 4096;
 						break;
@@ -324,7 +381,7 @@ namespace vm
 
 	void free_range_lock(atomic_t<u64, 128>* range_lock) noexcept
 	{
-		if (range_lock < g_range_lock_set || range_lock >= g_range_lock_set + g_range_lock_set_count)
+		if (range_lock < get_target_range_lock_set() || range_lock >= get_target_range_lock_set() + g_range_lock_set_count)
 		{
 			fmt::throw_exception("Invalid range lock");
 		}
@@ -332,8 +389,8 @@ namespace vm
 		range_lock->release(0);
 
 		// Use ptr difference to determine location
-		const auto diff = range_lock - g_range_lock_set;
-		g_range_lock_bits[0] &= ~(1ull << diff);
+		const auto diff = range_lock - get_target_range_lock_set();
+		get_target_range_lock_bits()[0] &= ~(1ull << diff);
 	}
 
 	template <typename F>
@@ -345,7 +402,7 @@ namespace vm
 		{
 			const u32 id = std::countr_zero(bits);
 
-			const u64 lock_val = g_range_lock_set[id].load();
+			const u64 lock_val = get_target_range_lock_set()[id].load();
 
 			if (const u32 size = static_cast<u32>(lock_val >> 32)) [[unlikely]]
 			{
@@ -379,12 +436,12 @@ namespace vm
 		}
 
 		// Block or signal new range locks
-		auto range_lock = &g_range_lock_set[g_range_lock_set_count - 1];
+		auto range_lock = &get_target_range_lock_set()[g_range_lock_set_count - 1];
 		*range_lock = addr | u64{size} << 32 | flags;
 
-		utils::prefetch_read(g_range_lock_set + 0);
-		utils::prefetch_read(g_range_lock_set + 2);
-		utils::prefetch_read(g_range_lock_set + 4);
+		utils::prefetch_read(get_target_range_lock_set() + 0);
+		utils::prefetch_read(get_target_range_lock_set() + 2);
+		utils::prefetch_read(get_target_range_lock_set() + 4);
 
 		const auto range = utils::address_range32::start_length(addr, size);
 
@@ -574,7 +631,7 @@ namespace vm
 			{
 				range_lock->release(addr | u64{size} << 32 | flags);
 
-				const auto diff = range_lock - g_range_lock_set;
+				const auto diff = range_lock - get_target_range_lock_set();
 
 				if (bits != umax && !bits.bit_test_set(static_cast<u32>(diff)))
 				{
@@ -608,15 +665,15 @@ namespace vm
 
 			u64 addr1 = addr;
 
-			if (u64 is_shared = g_shmem[addr >> 16]) [[unlikely]]
+			if (u64 is_shared = get_target_shmem()[addr >> 16]) [[unlikely]]
 			{
 				// Reservation address in shareable memory range
 				addr1 = static_cast<u16>(addr) | is_shared;
 			}
 
-			utils::prefetch_read(g_range_lock_set + 0);
-			utils::prefetch_read(g_range_lock_set + 2);
-			utils::prefetch_read(g_range_lock_set + 4);
+			utils::prefetch_read(get_target_range_lock_set() + 0);
+			utils::prefetch_read(get_target_range_lock_set() + 2);
+			utils::prefetch_read(get_target_range_lock_set() + 4);
 
 			u64 to_clear = get_range_lock_bits(false);
 
@@ -639,7 +696,7 @@ namespace vm
 						u64 addr3 = addr2;
 						u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
 
-						if (u64 is_shared = g_shmem[hi]) [[unlikely]]
+						if (u64 is_shared = get_target_shmem()[hi]) [[unlikely]]
 						{
 							addr3 = static_cast<u16>(addr2) | is_shared;
 						}
@@ -734,7 +791,7 @@ namespace vm
 			else
 			{
 				// TODO: Accurate locking in this case
-				if (!(get_active_vm_handle().page_flags[addr / 4096] & page_writable))
+				if (!(get_target_vm_handle().page_flags[addr / 4096] & page_writable))
 				{
 					return -1;
 				}
@@ -827,7 +884,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (get_active_vm_handle().page_flags[i])
+			if (get_target_vm_handle().page_flags[i])
 			{
 				fmt::throw_exception("Memory already mapped (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
@@ -854,7 +911,7 @@ namespace vm
 				ensure((shm_self & 0xffff'0000'0000'ffff) == range_locked);
 
 				// Find another mirror and map it as shareable too
-				for (auto& ploc : *g_locations)
+				for (auto& ploc : *get_target_locations())
 				{
 					if (auto loc = ploc.get())
 					{
@@ -864,7 +921,7 @@ namespace vm
 
 							for (u32 i = pp->first / 65536; i < pp->first / 65536 + size2 / 65536; i++)
 							{
-								g_shmem[i].release(shm_self);
+								get_target_shmem()[i].release(shm_self);
 
 								// Advance to the next position
 								shm_self += 0x10000;
@@ -886,7 +943,7 @@ namespace vm
 			// Map range as shareable
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
 			{
-				g_shmem[i].release(std::exchange(shm_self, shm_self + 0x10000));
+				get_target_shmem()[i].release(std::exchange(shm_self, shm_self + 0x10000));
 			}
 		}
 
@@ -948,7 +1005,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (get_active_vm_handle().page_flags[i].exchange(flags | page_allocated))
+			if (get_target_vm_handle().page_flags[i].exchange(flags | page_allocated))
 			{
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
@@ -993,14 +1050,14 @@ namespace vm
 
 			if (i < end)
 			{
-				new_val = get_active_vm_handle().page_flags[i];
+				new_val = get_target_vm_handle().page_flags[i];
 				new_val |= flags_set;
 				new_val &= ~flags_clear;
 			}
 
 			if (new_val != start_value)
 			{
-				const u8 old_val = get_active_vm_handle().page_flags[start];
+				const u8 old_val = get_target_vm_handle().page_flags[start];
 
 				if (u32 page_size = (i - start) * 4096; page_size && old_val != start_value)
 				{
@@ -1016,13 +1073,13 @@ namespace vm
 
 					for (u32 j = start; j < i; j++)
 					{
-						get_active_vm_handle().page_flags[j].release(start_value);
+						get_target_vm_handle().page_flags[j].release(start_value);
 					}
 
 					if ((old_val ^ start_value) & (page_readable | page_writable))
 					{
 						const auto protection = start_value & page_writable ? utils::protection::rw : (start_value & page_readable ? utils::protection::ro : utils::protection::no);
-						utils::memory_protect(g_base_addr + start * 4096, page_size, protection);
+							utils::memory_protect(get_target_base_addr() + start * 4096, page_size, protection);
 					}
 
 					range_lock->release(0);
@@ -1054,19 +1111,19 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + max_size / 4096; i++)
 		{
-			if ((get_active_vm_handle().page_flags[i] & page_allocated) == 0)
+			if ((get_target_vm_handle().page_flags[i] & page_allocated) == 0)
 			{
 				break;
 			}
 
 			if (size == 0)
 			{
-				is_exec = !!(get_active_vm_handle().page_flags[i] & page_executable);
+				is_exec = !!(get_target_vm_handle().page_flags[i] & page_executable);
 			}
 			else
 			{
 				// Must be consistent
-				ensure(is_exec == !!(get_active_vm_handle().page_flags[i] & page_executable));
+				ensure(is_exec == !!(get_target_vm_handle().page_flags[i] & page_executable));
 			}
 
 			size += 4096;
@@ -1075,24 +1132,24 @@ namespace vm
 		// Protect range locks from actual memory protection changes
 		auto range_lock = _lock_main_range_lock(range_allocation, addr, size);
 
-		if (shm && shm->flags() != 0 && g_shmem[addr >> 16])
+		if (shm && shm->flags() != 0 && get_target_shmem()[addr >> 16])
 		{
 			shm->info--;
 
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
 			{
-				g_shmem[i].release(0);
+				get_target_shmem()[i].release(0);
 			}
 		}
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (!(get_active_vm_handle().page_flags[i] & page_allocated))
+			if (!(get_target_vm_handle().page_flags[i] & page_allocated))
 			{
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, current_addr=0x%x)", addr, size, i * 4096);
 			}
 
-			get_active_vm_handle().page_flags[i].release(0);
+			get_target_vm_handle().page_flags[i].release(0);
 		}
 
 		// Notify rsx to invalidate range
@@ -1113,24 +1170,24 @@ namespace vm
 		}
 		else if (is_noop)
 		{
-			std::memset(g_sudo_addr + addr, 0, size);
+				std::memset(get_target_sudo_addr() + addr, 0, size);
 		}
 		else if (!shm)
 		{
-			utils::memory_protect(g_base_addr + addr, size, utils::protection::no);
-			std::memset(g_sudo_addr + addr, 0, size);
+				utils::memory_protect(get_target_base_addr() + addr, size, utils::protection::no);
+				std::memset(get_target_sudo_addr() + addr, 0, size);
 		}
 		else
 		{
-			shm->unmap_critical(g_base_addr + addr);
+				shm->unmap_critical(get_target_base_addr() + addr);
 #ifdef _WIN32
-			shm->unmap_critical(g_sudo_addr + addr);
+				shm->unmap_critical(get_target_sudo_addr() + addr);
 #endif
 		}
 
 		if (is_exec && !is_noop)
 		{
-			utils::memory_decommit(g_exec_addr + addr * 2, size * 2);
+				utils::memory_decommit(get_target_exec_addr() + addr * 2, size * 2);
 
 			if (g_cfg.core.ppu_debug)
 			{
@@ -1161,7 +1218,7 @@ namespace vm
 		// Prefer the calling thread's cached page table so a suspended-process
 		// thread reads its own VM rather than the active process's.
 		auto* cpu = get_current_cpu_thread();
-		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : get_active_vm_handle().page_flags.data();
+		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : get_target_vm_handle().page_flags.data();
 
 		for (u32 i = addr / 4096, max = (addr + size - 1) / 4096; i <= max;)
 		{
@@ -1218,9 +1275,9 @@ namespace vm
 		return block->falloc(addr, size, src);
 	}
 
-	u32 dealloc(u32 addr, memory_location_t location, const std::shared_ptr<utils::shm>* src)
-	{
-		const auto block = get(location, addr);
+		u32 dealloc(u32 addr, memory_location_t location, const std::shared_ptr<utils::shm>* src)
+		{
+			const auto block = get(location, addr);
 
 		if (!block)
 		{
@@ -1229,11 +1286,23 @@ namespace vm
 			return 0;
 		}
 
-		return block->dealloc(addr, src);
-	}
+			return block->dealloc(addr, src);
+		}
 
-	void lock_sudo(u32 addr, u32 size)
-	{
+		u32 dealloc_for_thread(const cpu_thread& cpu, u32 addr, memory_location_t location, const std::shared_ptr<utils::shm>* src)
+		{
+			if (!cpu.owner_pid)
+			{
+				return dealloc(addr, location, src);
+			}
+
+			vm_handle& handle = Emu.process_by_pid(cpu.owner_pid).vm_handle();
+			scoped_vm_handle target{handle};
+			return dealloc(addr, location, src);
+		}
+
+		void lock_sudo(u32 addr, u32 size)
+		{
 		perf_meter<"PAGE_LCK"_u64> perf;
 
 		ensure(addr % 4096 == 0);
@@ -1253,7 +1322,7 @@ namespace vm
 		// Check if memory area is already mapped
 		for (u32 i = addr / 4096; i <= (addr + size - 1) / 4096; i++)
 		{
-			if (get_active_vm_handle().page_flags[i])
+			if (get_target_vm_handle().page_flags[i])
 			{
 				return false;
 			}
@@ -1293,8 +1362,8 @@ namespace vm
 		if (this->flags & stack_guarded)
 		{
 			// Mark overflow/underflow guard pages as allocated
-			ensure(!get_active_vm_handle().page_flags[addr / 4096].exchange(page_allocated));
-			ensure(!get_active_vm_handle().page_flags[addr / 4096 + size / 4096 - 1].exchange(page_allocated));
+			ensure(!get_target_vm_handle().page_flags[addr / 4096].exchange(page_allocated));
+			ensure(!get_target_vm_handle().page_flags[addr / 4096 + size / 4096 - 1].exchange(page_allocated));
 		}
 
 		// Map "real" memory pages; provide a function to search for mirrors with private member access
@@ -1632,8 +1701,8 @@ namespace vm
 			if (flags & stack_guarded)
 			{
 				// Clear guard pages
-				ensure(get_active_vm_handle().page_flags[addr / 4096 - 1].exchange(0) == page_allocated);
-				ensure(get_active_vm_handle().page_flags[addr / 4096 + size / 4096].exchange(0) == page_allocated);
+				ensure(get_target_vm_handle().page_flags[addr / 4096 - 1].exchange(0) == page_allocated);
+				ensure(get_target_vm_handle().page_flags[addr / 4096 + size / 4096].exchange(0) == page_allocated);
 			}
 
 			// Unmap "real" memory pages
@@ -1642,8 +1711,8 @@ namespace vm
 			// Clear stack guards
 			if (flags & stack_guarded)
 			{
-				std::memset(g_sudo_addr + addr - 4096, 0, 4096);
-				std::memset(g_sudo_addr + addr + size, 0, 4096);
+					std::memset(get_target_sudo_addr() + addr - 4096, 0, 4096);
+					std::memset(get_target_sudo_addr() + addr + size, 0, 4096);
 			}
 
 			// Remove entry
@@ -1848,7 +1917,7 @@ namespace vm
 		for (const auto& [addr, shm] : m_map)
 		{
 			// Assume first page flags represent all the map
-			ar(get_active_vm_handle().page_flags[addr / 4096 + !!(flags & stack_guarded)]);
+			ar(get_target_vm_handle().page_flags[addr / 4096 + !!(flags & stack_guarded)]);
 
 			ar(addr);
 			ar(shm.first);
@@ -1960,7 +2029,7 @@ namespace vm
 			return false;
 		}
 
-		for (auto& block : *g_locations)
+		for (auto& block : *get_target_locations())
 		{
 			if (!block)
 			{
@@ -2015,7 +2084,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (get_active_vm_handle().page_flags[i])
+			if (get_target_vm_handle().page_flags[i])
 			{
 				fmt::throw_exception("Unexpected pages allocated (current_addr=0x%x)", i * 4096);
 			}
@@ -2023,7 +2092,7 @@ namespace vm
 
 		auto block = std::make_shared<block_t>(addr, size, flags);
 
-		g_locations->emplace_back(block);
+		get_target_locations()->emplace_back(block);
 
 		return block;
 	}
@@ -2033,16 +2102,16 @@ namespace vm
 		if (location != any)
 		{
 			// return selected location
-			if (location < g_locations->size())
+			if (location < get_target_locations()->size())
 			{
-				return (*g_locations)[location];
+				return (*get_target_locations())[location];
 			}
 
 			return nullptr;
 		}
 
 		// search location by address
-		for (auto& block : *g_locations)
+		for (auto& block : *get_target_locations())
 		{
 			if (block && addr >= block->addr && addr <= block->addr + block->size - 1)
 			{
@@ -2081,7 +2150,7 @@ namespace vm
 
 		auto block = _find_map(size, align, flags);
 
-		if (block) g_locations->emplace_back(block);
+		if (block) get_target_locations()->emplace_back(block);
 
 		return block;
 	}
@@ -2113,7 +2182,7 @@ namespace vm
 
 		vm::writer_lock lock;
 
-		for (auto it = g_locations->begin() + memory_location_max; it != g_locations->end(); it++)
+		for (auto it = get_target_locations()->begin() + memory_location_max; it != get_target_locations()->end(); it++)
 		{
 			if (*it && (*it)->addr == addr)
 			{
@@ -2139,7 +2208,7 @@ namespace vm
 				}
 
 				result.first = std::move(*it);
-				g_locations->erase(it);
+				get_target_locations()->erase(it);
 				ensure(_unmap_block(result.first, &unmap_notifications.unmap_data));
 				result.second = true;
 				return result;
@@ -2168,10 +2237,10 @@ namespace vm
 		}
 
 		// Allocation on arbitrary address
-		if (location != any && location < g_locations->size())
+		if (location != any && location < get_target_locations()->size())
 		{
 			// return selected location
-			auto& loc = (*g_locations)[location];
+			auto& loc = (*get_target_locations())[location];
 
 			if (!loc)
 			{
@@ -2231,14 +2300,14 @@ namespace vm
 	{
 		auto* range_lock = alloc_range_lock(); // Released at the end of function
 
-		auto mem_lock = &g_range_lock_set[g_range_lock_set_count - 1];
+		auto mem_lock = &get_target_range_lock_set()[g_range_lock_set_count - 1];
 
 		while (true)
 		{
 			range_lock->store(begin | (u64{size} << 32));
 
 			const u64 lock_val = mem_lock->load();
-			const u64 is_share = g_shmem[begin >> 16].load();
+			const u64 is_share = get_target_shmem()[begin >> 16].load();
 
 			u64 lock_addr = static_cast<u32>(lock_val); // -> u64
 			u32 lock_size = static_cast<u32>(lock_val << range_bits >> (range_bits + 32));
@@ -2320,9 +2389,9 @@ namespace vm
 			g_stat_addr, g_stat_addr + 0xffff'ffff,
 			g_reservations, g_reservations + g_reservations_size - 1);
 
-			std::memset(&get_active_vm_handle().page_flags, 0, sizeof(get_active_vm_handle().page_flags));
+			std::memset(&get_target_vm_handle().page_flags, 0, sizeof(get_target_vm_handle().page_flags));
 
-			*g_locations =
+			*get_target_locations() =
 			{
 				std::make_shared<block_t>(0x00010000, 0x0FFF0000, page_size_64k | preallocated), // main
 				nullptr,		                                                                 // user 64k pages
@@ -2334,9 +2403,9 @@ namespace vm
 			};
 
 			std::memset(g_reservations, 0, g_reservations_size);
-			std::memset(g_shmem, 0, sizeof(*g_shmem) * g_shmem_count);
-			std::memset(g_range_lock_set, 0, sizeof(*g_range_lock_set) * g_range_lock_set_count);
-			std::memset(g_range_lock_bits, 0, sizeof(*g_range_lock_bits) * 2);
+			std::memset(get_target_shmem(), 0, sizeof(*get_target_shmem()) * g_shmem_count);
+			std::memset(get_target_range_lock_set(), 0, sizeof(*get_target_range_lock_set()) * g_range_lock_set_count);
+			std::memset(get_target_range_lock_bits(), 0, sizeof(*get_target_range_lock_bits()) * 2);
 
 #ifdef _WIN32
 			utils::memory_release(g_hook_addr, 0x800000000);
@@ -2350,7 +2419,7 @@ namespace vm
 		{
 			vm::writer_lock lock;
 
-			for (auto& block : *g_locations)
+			for (auto& block : *get_target_locations())
 			{
 				if (block)
 				{
@@ -2359,7 +2428,7 @@ namespace vm
 				}
 			}
 
-			g_locations->clear();
+			get_target_locations()->clear();
 		}
 
 		utils::memory_decommit(g_exec_addr, 0x200000000);
@@ -2372,8 +2441,8 @@ namespace vm
 		utils::memory_decommit(g_hook_addr, 0x800000000);
 #endif
 
-		std::memset(g_range_lock_set, 0, sizeof(*g_range_lock_set) * g_range_lock_set_count);
-		std::memset(g_range_lock_bits, 0, sizeof(*g_range_lock_bits) * 2);
+		std::memset(get_target_range_lock_set(), 0, sizeof(*get_target_range_lock_set()) * g_range_lock_set_count);
+		std::memset(get_target_range_lock_bits(), 0, sizeof(*get_target_range_lock_bits()) * 2);
 	}
 
 	void save(utils::serial& ar)
@@ -2382,7 +2451,7 @@ namespace vm
 		// Just need one address for this optimization
 		std::vector<std::pair<utils::shm*, u32>> shared;
 
-		for (auto& loc : *g_locations)
+		for (auto& loc : *get_target_locations())
 		{
 			if (loc) loc->get_shared_memory(shared);
 		}
@@ -2426,9 +2495,9 @@ namespace vm
 		}
 
 		// TODO: Serialize std::vector direcly
-		ar(g_locations->size());
+		ar(get_target_locations()->size());
 
-		for (auto& loc : *g_locations)
+		for (auto& loc : *get_target_locations())
 		{
 			const u8 has = loc.operator bool();
 			ar(has);
@@ -2468,15 +2537,15 @@ namespace vm
 			serialize_memory_bytes(ar, shm->map_self(), shm->size());
 		}
 
-		for (auto& block : *g_locations)
+		for (auto& block : *get_target_locations())
 		{
 			if (block) _unmap_block(block);
 		}
 
-		g_locations->clear();
-		g_locations->resize(ar.pop<usz>());
+		get_target_locations()->clear();
+		get_target_locations()->resize(ar.pop<usz>());
 
-		for (auto& loc : *g_locations)
+		for (auto& loc : *get_target_locations())
 		{
 			const u8 has = ar.pop<u8>();
 
@@ -2489,7 +2558,7 @@ namespace vm
 
 	u32 get_shm_addr(const std::shared_ptr<utils::shm>& shared)
 	{
-		for (auto& loc : *g_locations)
+		for (auto& loc : *get_target_locations())
 		{
 			if (u32 addr = loc ? loc->get_shm_addr(shared) : 0)
 			{

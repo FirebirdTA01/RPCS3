@@ -55,7 +55,7 @@ void ppu_thread_exit(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struct ppu_intrp
 	ppu.state += cpu_flag::exit + cpu_flag::wait;
 
 	// Deallocate Stack Area
-	ensure(vm::dealloc(ppu.stack_addr, vm::stack) == ppu.stack_size);
+	ensure(vm::dealloc_for_thread(ppu, ppu.stack_addr, vm::stack) == ppu.stack_size);
 
 	if (auto dct = fxo::try_get<lv2_memory_container>())
 	{

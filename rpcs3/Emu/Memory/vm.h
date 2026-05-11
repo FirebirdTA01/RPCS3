@@ -162,8 +162,9 @@ namespace vm
 	// Map memory at specified address (in optionally specified memory location)
 	bool falloc(u32 addr, u32 size, memory_location_t location = any, const std::shared_ptr<utils::shm>* src = nullptr);
 
-	// Unmap memory at specified address (in optionally specified memory location), return size
-	u32 dealloc(u32 addr, memory_location_t location = any, const std::shared_ptr<utils::shm>* src = nullptr);
+		// Unmap memory at specified address (in optionally specified memory location), return size
+		u32 dealloc(u32 addr, memory_location_t location = any, const std::shared_ptr<utils::shm>* src = nullptr);
+		u32 dealloc_for_thread(const cpu_thread& cpu, u32 addr, memory_location_t location = any, const std::shared_ptr<utils::shm>* src = nullptr);
 
 	// utils::memory_lock wrapper for locking sudo memory
 	void lock_sudo(u32 addr, u32 size);
