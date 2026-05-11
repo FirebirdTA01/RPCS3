@@ -89,6 +89,15 @@ error_code sys_hid_manager_ioctl(u32 hid_handle, u32 pkg_id, vm::ptr<void> buf, 
 		[[maybe_unused]] auto info = vm::static_ptr_cast<sys_hid_ioctl_68>(buf);
 		//info->unk2 = 0;
 	}
+	else if (pkg_id == 0x4)
+	{
+		if (!buf || buf_size < 1)
+		{
+			return CELL_EFAULT;
+		}
+
+		*vm::static_ptr_cast<u8>(buf) = 0xee;
+	}
 
 	return CELL_OK;
 }
