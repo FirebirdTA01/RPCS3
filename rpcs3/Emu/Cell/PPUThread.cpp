@@ -509,14 +509,34 @@ const auto ppu_recompiler_fallback_ghc = build_function_asm<void(*)(ppu_thread& 
 #endif
 
 // Get pointer to executable cache
+static inline u8* ppu_exec_base()
+{
+	if (const auto cpu = cpu_thread::get_current(); cpu && cpu->exec_base_addr)
+	{
+		return cpu->exec_base_addr;
+	}
+
+	return vm::get_target_vm_handle().exec_addr;
+}
+
+static inline u8* ppu_ptr(u32 addr, u8* exec_base)
+{
+	return exec_base + u64{addr} * 2;
+}
+
 static inline u8* ppu_ptr(u32 addr)
 {
-	return vm::g_exec_addr + u64{addr} * 2;
+	return ppu_ptr(addr, ppu_exec_base());
+}
+
+static inline u8* ppu_seg_ptr(u32 addr, u8* exec_base)
+{
+	return exec_base + vm::g_exec_addr_seg_offset + (addr >> 1);
 }
 
 static inline u8* ppu_seg_ptr(u32 addr)
 {
-	return vm::g_exec_addr + vm::g_exec_addr_seg_offset + (addr >> 1);
+	return ppu_seg_ptr(addr, ppu_exec_base());
 }
 
 static inline ppu_intrp_func_t ppu_read(u32 addr)
@@ -814,13 +834,14 @@ extern void ppu_register_range(u32 addr, u32 size)
 
 	size = utils::align(size + addr % 0x10000, 0x10000);
 	addr &= -0x10000;
+	u8* exec_base = ppu_exec_base();
 
 	// Register executable range at
-	utils::memory_commit(ppu_ptr(addr), u64{size} * 2, utils::protection::rw);
+	utils::memory_commit(ppu_ptr(addr, exec_base), u64{size} * 2, utils::protection::rw);
 	ensure(vm::page_protect(addr, size, 0, vm::page_executable));
 
 	// Segment data
-	utils::memory_commit(ppu_seg_ptr(addr), size >> 1, utils::protection::rw);
+	utils::memory_commit(ppu_seg_ptr(addr, exec_base), size >> 1, utils::protection::rw);
 
 	if (g_cfg.core.ppu_debug)
 	{
@@ -834,13 +855,13 @@ extern void ppu_register_range(u32 addr, u32 size)
 		if (g_cfg.core.ppu_decoder == ppu_decoder_type::llvm)
 		{
 			// Assume addr is the start of first segment of PRX
-			write_to_ptr<uptr>(ppu_ptr(addr), std::bit_cast<uptr>(ppu_recompiler_fallback_ghc));
-			write_to_ptr<u16>(ppu_seg_ptr(addr), static_cast<u16>(seg_base >> 13));
+			write_to_ptr<uptr>(ppu_ptr(addr, exec_base), std::bit_cast<uptr>(ppu_recompiler_fallback_ghc));
+			write_to_ptr<u16>(ppu_seg_ptr(addr, exec_base), static_cast<u16>(seg_base >> 13));
 		}
 		else
 		{
-			write_to_ptr<ppu_intrp_func_t>(ppu_ptr(addr), ppu_fallback);
-			write_to_ptr<u16>(ppu_seg_ptr(addr), 0);
+			write_to_ptr<ppu_intrp_func_t>(ppu_ptr(addr, exec_base), ppu_fallback);
+			write_to_ptr<u16>(ppu_seg_ptr(addr, exec_base), 0);
 		}
 
 		addr += 4;
@@ -5633,7 +5654,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			index++;
 
 			sim = ensure(!is_first ? sim : reinterpret_cast<void(*)(u8*, u64)>(jits[index]->get("__resolve_symbols")));
-			sim(vm::g_exec_addr, info.segs[0].addr);
+			sim(ppu_exec_base(), info.segs[0].addr);
 		}
 	}
 
