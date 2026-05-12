@@ -699,8 +699,8 @@ namespace rsx
 	thread::thread(utils::serial* _ar)
 		: cpu_thread(0x5555'5555)
 	{
-		owner_pid = Emu.current_process().pid();
-		m_rsx_state = &Emu.current_process().rsx_ctx();
+		bind_owner_vm_context(cpu_thread::get_current_owner_pid());
+		m_rsx_state = &Emu.process_by_pid(owner_pid).rsx_ctx();
 		bind_rsx_state_pointers(m_rsx_state);
 
 		g_access_violation_handler = [this](u32 address, bool is_writing)
@@ -973,7 +973,7 @@ namespace rsx
 
 		if (!is_initialized)
 		{
-			fxo::get<rsx::dma_manager>().init();
+			fxo::get<rsx::dma_manager>().init(*this);
 			on_init_thread();
 
 			if (in_begin_end)
@@ -1054,8 +1054,16 @@ namespace rsx
 			// sys_rsx_context_attribute and other process-local lookups address
 			// the right local_fxo under co-resident execution.
 			id_manager::g_host_thread_owner_pid = this->owner_pid;
-			vm::g_host_thread_vm_base = this->memory_base_addr;
-			vm::g_host_thread_sudo_base = this->sudo_base_addr;
+			vm::enter_thread_vm_context(Emu.process_by_pid(this->owner_pid).vm_handle(), this->memory_base_addr, this->sudo_base_addr, this->reservations_base_addr);
+
+			struct host_context_cleanup
+			{
+				~host_context_cleanup()
+				{
+					vm::leave_thread_vm_context();
+					id_manager::g_host_thread_owner_pid = 0;
+				}
+			} cleanup;
 
 #ifdef __linux__
 			constexpr u32 host_min_quantum = 10;

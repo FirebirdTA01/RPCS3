@@ -23,11 +23,18 @@ namespace vm
 		rsrv_putunc_flag = 32,
 	};
 
+	inline u8* reservation_base()
+	{
+		const auto cpu = get_current_cpu_thread();
+		return cpu && cpu->reservations_base_addr ? cpu->reservations_base_addr :
+			g_host_thread_reservations_base ? g_host_thread_reservations_base : g_reservations;
+	}
+
 	// Get reservation status for further atomic update: last update timestamp
 	inline atomic_t<u64>& reservation_acquire(u32 addr)
 	{
 		// Access reservation info: stamp and the lock bit
-		return *reinterpret_cast<atomic_t<u64>*>(g_reservations + (addr & 0xff80) / 2);
+		return *reinterpret_cast<atomic_t<u64>*>(reservation_base() + (addr & 0xff80) / 2);
 	}
 
 	// Update reservation status

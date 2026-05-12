@@ -61,6 +61,16 @@ namespace vm
 	// Called once during Emulator startup before set_active_process can move them.
 	void init_primary_vm_handle(vm_handle& vh);
 
+	// Returns the target VM handle for the calling context:
+	// per-thread TLS if a vm_handle was bound, else the active process's handle.
+	vm_handle& get_target_vm_handle();
+
+	// Bind/clear guest-memory routing for host threads executing on behalf of a
+	// specific process. cpu_thread entry uses this as the outer owner-process
+	// context; host helper threads use the same API when they need guest VM access.
+	void enter_thread_vm_context(vm_handle& handle, u8* base, u8* sudo, u8* reservations);
+	void leave_thread_vm_context();
+
 	// Swapped together by set_active_process so the active process's host mapping is current.
 	extern u8* g_base_addr;
 	extern u8* g_sudo_addr;
@@ -82,6 +92,7 @@ namespace vm
 	// kept for unbound host threads).
 	inline thread_local u8* g_host_thread_vm_base = nullptr;
 	inline thread_local u8* g_host_thread_sudo_base = nullptr;
+	inline thread_local u8* g_host_thread_reservations_base = nullptr;
 
 	static constexpr u64 g_exec_addr_seg_offset = 0x2'0000'0000ULL;
 
@@ -138,7 +149,7 @@ namespace vm
 		}
 
 		auto* cpu = get_current_cpu_thread();
-		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : g_pages;
+		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : get_target_vm_handle().page_flags.data();
 		return !(~pages[addr / 4096] & (flags | page_allocated));
 	}
 
@@ -147,7 +158,7 @@ namespace vm
 	{
 
 		auto* cpu = get_current_cpu_thread();
-		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : g_pages;
+		atomic_t<u8>* pages = cpu && cpu->page_flags ? cpu->page_flags : get_target_vm_handle().page_flags.data();
 		const u8 flags = pages[addr / 4096].load();
 
 		return std::make_pair(!!(flags & page_allocated), flags);
@@ -277,7 +288,13 @@ namespace vm
 	// Super memory is allowed as well
 	inline std::pair<vm::addr_t, bool> try_get_addr(const void* real_ptr)
 	{
-		const std::make_unsigned_t<std::ptrdiff_t> diff = static_cast<const u8*>(real_ptr) - g_base_addr;
+		auto* cpu = get_current_cpu_thread();
+		u8* base;
+		if (cpu)                         base = cpu->memory_base_addr;
+		else if (g_host_thread_vm_base)  base = g_host_thread_vm_base;
+		else                             base = g_base_addr;
+
+		const std::make_unsigned_t<std::ptrdiff_t> diff = static_cast<const u8*>(real_ptr) - base;
 
 		if (diff <= u64{u32{umax}} * 2 + 1)
 		{
@@ -381,7 +398,7 @@ namespace vm
 		template <typename T = u8>
 		inline to_be_t<T>* get_super_ptr(u32 addr)
 		{
-			return reinterpret_cast<to_be_t<T>*>(g_sudo_addr + addr);
+			return reinterpret_cast<to_be_t<T>*>(vm::sudo_base() + addr);
 		}
 
 		inline const be_t<u16>& read16(u32 addr)

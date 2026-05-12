@@ -2551,7 +2551,7 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 
 	// Trigger the scheduler
 	state += cpu_flag::suspend;
-	owner_pid = Emu.current_process().pid();
+	bind_owner_vm_context(cpu_thread::get_current_owner_pid());
 
 	// Acquire memory passive lock
 	state += cpu_flag::memory;
@@ -2800,7 +2800,7 @@ ppu_thread::ppu_thread(utils::serial& ar)
 
 	// Trigger the scheduler
 	state += cpu_flag::suspend;
-	owner_pid = Emu.current_process().pid();
+	bind_owner_vm_context(cpu_thread::get_current_owner_pid());
 	state += cpu_flag::memory;
 
 	ppu_tname = make_single<std::string>(ar.pop<std::string>());

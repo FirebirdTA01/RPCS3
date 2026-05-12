@@ -1768,7 +1768,8 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 	, spu_tname(make_single<std::string>(name))
 {
 	init_spu_decoder();
-	owner_pid = Emu.current_process().pid();
+	bind_owner_vm_context(cpu_thread::get_current_owner_pid());
+	reserv_base_addr = reservations_base_addr;
 
 	if (g_cfg.core.mfc_debug)
 	{
@@ -1831,7 +1832,8 @@ spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
 	, spu_tname(make_single<std::string>(ar.operator std::string()))
 {
 	init_spu_decoder();
-	owner_pid = Emu.current_process().pid();
+	bind_owner_vm_context(cpu_thread::get_current_owner_pid());
+	reserv_base_addr = reservations_base_addr;
 
 	if (g_cfg.core.mfc_debug)
 	{
@@ -2267,7 +2269,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				auto& res = vm::reservation_acquire(eal);
 
 				// Lock each bit corresponding to a byte being written, using some free space in reservation memory
-				auto* bits = utils::bless<atomic_t<u128>>(vm::g_reservations + ((eal & 0xff80) / 2 + 16));
+				auto* bits = utils::bless<atomic_t<u128>>(_this->reservations_base_addr + ((eal & 0xff80) / 2 + 16));
 
 				// Get writing mask
 				const u128 wmask = (~u128{} << (eal & 127)) & (~u128{} >> (127 - ((eal + size0 - 1) & 127)));
@@ -3518,7 +3520,7 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 
 	{
 		auto& sdata = *vm::get_super_ptr<spu_rdata_t>(addr);
-		auto& res = *utils::bless<atomic_t<u128>>(vm::g_reservations + (addr & 0xff80) / 2);
+		auto& res = *utils::bless<atomic_t<u128>>(vm::reservation_base() + (addr & 0xff80) / 2);
 
 		if (std::memcmp(static_cast<const u8*>(to_write), &sdata, 16) == 0 && std::memcmp(static_cast<const u8*>(to_write) + 64, &sdata[64], 16) == 0)
 		{

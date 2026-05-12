@@ -11,6 +11,8 @@ class named_thread;
 
 namespace rsx
 {
+	class thread;
+
 	class dma_manager
 	{
 		enum op
@@ -64,7 +66,7 @@ namespace rsx
 		dma_manager() = default;
 
 		// initialization
-		void init();
+		void init(thread& owner);
 
 		// General tranport
 		void copy(void *dst, std::vector<u8>& src, u32 length) const;

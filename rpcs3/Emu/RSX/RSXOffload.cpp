@@ -1,5 +1,6 @@
 #include "stdafx.h"
 
+#include "Emu/System.h"
 #include "Emu/Memory/vm.h"
 #include "Common/BufferUtils.h"
 #include "Core/RSXReservationLock.hpp"
@@ -21,6 +22,18 @@ namespace rsx
 		transport_packet* m_current_job = nullptr;
 
 		thread_base* current_thread_ = nullptr;
+		vm::vm_handle* m_vm_handle = nullptr;
+		u8* m_memory_base_addr = nullptr;
+		u8* m_sudo_base_addr = nullptr;
+		u8* m_reservations_base_addr = nullptr;
+
+		offload_thread(vm::vm_handle& handle, u8* memory_base_addr, u8* sudo_base_addr, u8* reservations_base_addr) noexcept
+			: m_vm_handle(&handle)
+			, m_memory_base_addr(memory_base_addr)
+			, m_sudo_base_addr(sudo_base_addr)
+			, m_reservations_base_addr(reservations_base_addr)
+		{
+		}
 
 		void operator ()()
 		{
@@ -32,6 +45,16 @@ namespace rsx
 
 			current_thread_ = thread_ctrl::get_current();
 			ensure(current_thread_);
+
+			vm::enter_thread_vm_context(*m_vm_handle, m_memory_base_addr, m_sudo_base_addr, m_reservations_base_addr);
+
+			struct vm_context_cleanup
+			{
+				~vm_context_cleanup()
+				{
+					vm::leave_thread_vm_context();
+				}
+			} cleanup;
 
 			if (g_cfg.core.thread_scheduler != thread_scheduler_mode::os)
 			{
@@ -91,9 +114,9 @@ namespace rsx
 	};
 
 	// initialization
-	void dma_manager::init()
+	void dma_manager::init(thread& owner)
 	{
-		m_thread = std::make_shared<named_thread<offload_thread>>();
+		m_thread = std::make_shared<named_thread<offload_thread>>(Emu.process_by_pid(owner.owner_pid).vm_handle(), owner.memory_base_addr, owner.sudo_base_addr, owner.reservations_base_addr);
 	}
 
 	// General transport

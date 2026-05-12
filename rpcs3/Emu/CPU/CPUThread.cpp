@@ -665,6 +665,7 @@ void cpu_thread::operator()()
 	const auto old_prefix = g_tls_log_prefix;
 
 	g_tls_this_thread = this;
+	vm::enter_thread_vm_context(Emu.process_by_pid(owner_pid).vm_handle(), memory_base_addr, sudo_base_addr, reservations_base_addr);
 
 	if (g_cfg.core.thread_scheduler != thread_scheduler_mode::os)
 	{
@@ -729,6 +730,8 @@ void cpu_thread::operator()()
 			s_cpu_counter--;
 
 			g_tls_log_prefix = log_prefix;
+
+			vm::leave_thread_vm_context();
 
 			g_tls_this_thread = nullptr;
 
@@ -809,10 +812,32 @@ cpu_thread::~cpu_thread()
 {
 }
 
+u32 cpu_thread::get_current_owner_pid()
+{
+	if (const auto cpu = get_current())
+	{
+		return cpu->owner_pid;
+	}
+
+	return Emu.current_process().pid();
+}
+
+void cpu_thread::bind_owner_vm_context(u32 pid)
+{
+	owner_pid = pid;
+
+	auto& handle = Emu.process_by_pid(pid).vm_handle();
+	memory_base_addr = handle.base_addr;
+	exec_base_addr = handle.exec_addr;
+	sudo_base_addr = handle.sudo_addr;
+	reservations_base_addr = handle.reservations;
+	page_flags = handle.page_flags.data();
+}
+
 cpu_thread::cpu_thread(u32 id)
 	: id(id)
 {
-	// Capture this thread's owning-process VM pointers at construction time.
+	// Capture a fallback VM view at construction time.
 	// Load-bearing under the multi-process model: vm::g_base_addr / g_pages
 	// / g_exec_addr are GLOBALS that swap on set_active_process, but a
 	// cpu_thread's view of guest memory must remain consistent with the
@@ -820,12 +845,13 @@ cpu_thread::cpu_thread(u32 id)
 	// page_flags serve as the per-thread proxies for those globals. The
 	// PPU JIT hot path reads memory_base_addr via rbx (x64) / x22 (ARM64)
 	// loaded from this struct in ppu_gateway, and reads exec_base_addr
-	// via r13 (x64) / x19 (ARM64) the same way. As long as a thread only
-	// runs after its owner process is the active one, this view is correct
-	// regardless of the global's current value.
+	// via r13 (x64) / x19 (ARM64) the same way. Derived constructors call
+	// bind_owner_vm_context() after owner_pid is known, so threads created
+	// while another process is active still inherit the creator's VM view.
 	memory_base_addr = vm::g_base_addr;
 	exec_base_addr = vm::g_exec_addr;
 	sudo_base_addr = vm::g_sudo_addr;
+	reservations_base_addr = vm::g_reservations;
 	page_flags = vm::g_pages;
 	while (Emu.GetStatus() == system_state::paused)
 	{

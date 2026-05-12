@@ -3,6 +3,7 @@
 #include "vm_ptr.h"
 #include "vm_reservation.h"
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 
 #include "Utilities/Thread.h"
 #include "Utilities/address_range.h"
@@ -130,6 +131,29 @@ namespace vm
 	std::vector<std::shared_ptr<block_t>>* g_locations = &Emu.current_process().vm_handle().locations;
 
 	thread_local vm_handle* g_target_vm_handle = nullptr;
+
+	void enter_thread_vm_context(vm_handle& handle, u8* base, u8* sudo, u8* reservations)
+	{
+#ifdef RPCS3_MULTIPROC_DEBUG
+		ensure(!g_target_vm_handle);
+		ensure(!g_host_thread_vm_base);
+		ensure(!g_host_thread_sudo_base);
+		ensure(!g_host_thread_reservations_base);
+#endif
+
+		g_target_vm_handle = &handle;
+		g_host_thread_vm_base = base;
+		g_host_thread_sudo_base = sudo;
+		g_host_thread_reservations_base = reservations;
+	}
+
+	void leave_thread_vm_context()
+	{
+		g_target_vm_handle = nullptr;
+		g_host_thread_vm_base = nullptr;
+		g_host_thread_sudo_base = nullptr;
+		g_host_thread_reservations_base = nullptr;
+	}
 
 	vm_handle& get_target_vm_handle()
 	{
@@ -981,13 +1005,13 @@ namespace vm
 		}
 		else if (!shm)
 		{
-			utils::memory_protect(g_base_addr + addr, size, prot);
+			utils::memory_protect(get_target_base_addr() + addr, size, prot);
 
 			perf_meter<"PAGE_LCK"_u64> perf;
-			utils::memory_lock(g_base_addr + addr, size);
-			utils::memory_lock(g_sudo_addr + addr, size);
+			utils::memory_lock(get_target_base_addr() + addr, size);
+			utils::memory_lock(get_target_sudo_addr() + addr, size);
 		}
-		else if (!map_critical(g_base_addr + addr, prot) || !map_critical(g_sudo_addr + addr, utils::protection::rw) || (map_error = "map_self()", !shm->map_self()))
+		else if (!map_critical(get_target_base_addr() + addr, prot) || !map_critical(get_target_sudo_addr() + addr, utils::protection::rw) || (map_error = "map_self()", !shm->map_self()))
 		{
 			fmt::throw_exception("Memory mapping failed (addr=0x%x, size=0x%x, flags=0x%x): %s", addr, size, flags, map_error);
 		}
@@ -995,7 +1019,7 @@ namespace vm
 		if (flags & page_executable && !is_noop)
 		{
 			// TODO (dead code)
-			utils::memory_commit(g_exec_addr + addr * 2, size * 2);
+			utils::memory_commit(get_target_exec_addr() + addr * 2, size * 2);
 
 			if (g_cfg.core.ppu_debug)
 			{
@@ -1308,7 +1332,7 @@ namespace vm
 		ensure(addr % 4096 == 0);
 		ensure(size % 4096 == 0);
 
-		if (!utils::memory_lock(g_sudo_addr + addr, size))
+		if (!utils::memory_lock(get_target_sudo_addr() + addr, size))
 		{
 			vm_log.error("Failed to lock sudo memory (addr=0x%x, size=0x%x). Consider increasing your system limits.", addr, size);
 		}
@@ -1410,8 +1434,8 @@ namespace vm
 			};
 
 			const u32 enda = addr + size - 4096;
-			fill64(g_sudo_addr + addr, "STACKGRD"_u64, 4096 / sizeof(u64));
-			fill64(g_sudo_addr + enda, "UNDERFLO"_u64, 4096 / sizeof(u64));
+			fill64(get_target_sudo_addr() + addr, "STACKGRD"_u64, 4096 / sizeof(u64));
+			fill64(get_target_sudo_addr() + enda, "UNDERFLO"_u64, 4096 / sizeof(u64));
 		}
 
 		// Add entry
@@ -2266,7 +2290,7 @@ namespace vm
 	{
 		if (vm::check_addr(addr, is_write ? page_writable : page_readable, size))
 		{
-			void* src = vm::g_sudo_addr + addr;
+			void* src = get_target_sudo_addr() + addr;
 			void* dst = ptr;
 
 			if (is_write)

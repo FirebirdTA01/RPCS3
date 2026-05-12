@@ -54,9 +54,10 @@ class cpu_thread
 {
 public:
 	u64 block_hash = 0;
-	u8* memory_base_addr = nullptr; // Set by derived class constructors from vm::g_base_addr
-	u8* exec_base_addr = nullptr;   // Set in cpu_thread ctor from vm::g_exec_addr (PPU dispatch table)
+	u8* memory_base_addr = nullptr; // Cached pointer to owner process's base memory
+	u8* exec_base_addr = nullptr;   // Cached pointer to owner process's PPU dispatch table
 	u8* sudo_base_addr = nullptr;   // sudo (kernel-visible) view; mirrors memory_base_addr
+	u8* reservations_base_addr = nullptr; // Cached pointer to owner process's reservation memory
 	atomic_t<u8>* page_flags = nullptr; // Cached pointer to owner process's vm_handle::page_flags
 	u32 owner_pid = 1; // Process ID that owns this thread (default: primary process)
 
@@ -69,6 +70,8 @@ public:
 
 	virtual ~cpu_thread();
 	void operator()();
+	void bind_owner_vm_context(u32 pid);
+	static u32 get_current_owner_pid();
 
 	// Self identifier
 	const u32 id;
