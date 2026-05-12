@@ -621,7 +621,8 @@ namespace vm
 	}
 
 	writer_lock::writer_lock(u32 const addr, atomic_t<u64, 128>* range_lock, u32 const size, u64 const flags) noexcept
-		: range_lock(range_lock)
+		: handle(&get_target_vm_handle())
+		, range_lock(range_lock)
 	{
 		cpu_thread* cpu{};
 

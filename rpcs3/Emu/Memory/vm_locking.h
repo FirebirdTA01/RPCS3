@@ -32,6 +32,8 @@ namespace vm
 
 	extern atomic_t<u64>* g_shmem;
 
+	atomic_t<u64, 128>* get_target_range_lock_bits();
+
 	// Register reader
 	void passive_lock(cpu_thread& cpu);
 
@@ -70,7 +72,7 @@ namespace vm
 		__asm__(""); // Tiny barrier
 		#endif
 
-		if (!g_range_lock_bits[1]) [[likely]]
+		if (!get_target_range_lock_bits()[1]) [[likely]]
 		{
 			return;
 		}
@@ -94,6 +96,7 @@ namespace vm
 
 	struct writer_lock final
 	{
+		vm_handle* handle;
 		atomic_t<u64, 128>* range_lock;
 
 		writer_lock(const writer_lock&) = delete;

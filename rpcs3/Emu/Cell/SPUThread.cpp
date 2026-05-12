@@ -500,19 +500,17 @@ const extern spu_decoder<spu_iflag> g_spu_iflag;
 
 namespace vm
 {
-	extern atomic_t<u64, 128>* g_range_lock_set;
-
 	// Defined here for performance reasons
 	writer_lock::~writer_lock() noexcept
 	{
 		if (range_lock)
 		{
-			g_range_lock_bits[1] &= ~(1ull << (range_lock - g_range_lock_set));
+			handle->range_lock_bits[1] &= ~(1ull << (range_lock - handle->range_lock_set));
 			range_lock->release(0);
 			return;
 		}
 
-		g_range_lock_bits[1].release(0);
+		handle->range_lock_bits[1].release(0);
 	}
 }
 
@@ -4961,7 +4959,8 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 	// Set range_lock first optimistically
 	range_lock->store(u64{128} << 32 | addr | vm::range_readable);
 
-	u64 lock_val = vm::g_range_lock_set[vm::g_range_lock_set_count - 1];
+	auto& target_vm = vm::get_target_vm_handle();
+	u64 lock_val = target_vm.range_lock_set[vm::g_range_lock_set_count - 1];
 	u64 old_lock = 0;
 
 	while (lock_val != old_lock)
@@ -4981,7 +4980,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 				}
 
 				// g_shmem values are unchanged too
-				const u64 is_shmem = vm::g_shmem[addr >> 16];
+				const u64 is_shmem = target_vm.shmem[addr >> 16];
 
 				const u64 test_addr = is_shmem ? (is_shmem | static_cast<u16>(addr)) / 128 : u64{addr} / 128;
 				const u64 lock_addr = lock_val / 128;
@@ -5016,7 +5015,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 			break;
 		}
 
-		old_lock = std::exchange(lock_val, vm::g_range_lock_set[vm::g_range_lock_set_count - 1]);
+		old_lock = std::exchange(lock_val, target_vm.range_lock_set[vm::g_range_lock_set_count - 1]);
 	}
 
 	if (!range_lock->load()) [[unlikely]]
@@ -5042,7 +5041,8 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 	// Set range_lock first optimistically
 	range_lock->store(u64{128} << 32 | addr | vm::range_readable);
 
-	u64 lock_val = vm::g_range_lock_set[vm::g_range_lock_set_count - 1];
+	auto& target_vm = vm::get_target_vm_handle();
+	u64 lock_val = target_vm.range_lock_set[vm::g_range_lock_set_count - 1];
 	u64 old_lock = 0;
 
 	while (lock_val != old_lock)
@@ -5062,7 +5062,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 				}
 
 				// g_shmem values are unchanged too
-				const u64 is_shmem = vm::g_shmem[addr >> 16];
+				const u64 is_shmem = target_vm.shmem[addr >> 16];
 
 				const u64 test_addr = is_shmem ? (is_shmem | static_cast<u16>(addr)) / 128 : u64{addr} / 128;
 				const u64 lock_addr = lock_val / 128;
@@ -5097,7 +5097,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 			break;
 		}
 
-		old_lock = std::exchange(lock_val, vm::g_range_lock_set[vm::g_range_lock_set_count - 1]);
+		old_lock = std::exchange(lock_val, target_vm.range_lock_set[vm::g_range_lock_set_count - 1]);
 	}
 
 	if (!range_lock->load()) [[unlikely]]
