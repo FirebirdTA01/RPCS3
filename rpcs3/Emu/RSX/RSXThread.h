@@ -19,6 +19,7 @@
 #include "Capture/rsx_trace.h"
 #include "Capture/rsx_replay.h"
 
+#include "rsx_methods.h"
 #include "Emu/Cell/lv2/sys_rsx.h"
 #include "Emu/IdManager.h"
 
@@ -29,6 +30,7 @@
 #include "Core/RSXContext.h"
 #include "Core/RSXVertexTypes.h"
 
+#include "NV47/HW/context.h"
 #include "NV47/FW/GRAPH_backend.h"
 
 extern atomic_t<bool> g_user_asked_for_frame_capture;
@@ -119,6 +121,17 @@ namespace rsx
 		// Emulator::set_active_process for every subsequent swap so reads through
 		// m_rsx_state-> never dereference null.
 		void bind_rsx_state_pointers(rsx_context_state* state);
+
+		rsx_state& get_register_state()
+		{
+			return *m_ctx->register_state;
+		}
+
+		const rsx_state& get_register_state() const
+		{
+			return *m_ctx->register_state;
+		}
+
 	protected:
 
 		s32 m_skip_frame_ctr = 0;
@@ -170,6 +183,8 @@ namespace rsx
 		u32 m_pause_after_x_flips = 0;
 
 		// Context
+		rsx_state m_register_state{};
+		context m_local_context{};
 		context* m_ctx = nullptr;
 
 		// Host DMA

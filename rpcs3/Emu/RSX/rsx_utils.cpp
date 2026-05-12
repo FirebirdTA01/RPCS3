@@ -80,22 +80,27 @@ namespace rsx
 	//Convert decoded integer values for CONSTANT_BLEND_FACTOR into f32 array in 0-1 range
 	std::array<float, 4> get_constant_blend_colors()
 	{
+		return get_constant_blend_colors(rsx::method_registers);
+	}
+
+	std::array<float, 4> get_constant_blend_colors(const rsx_state& regs)
+	{
 		//TODO: check another color formats (probably all integer formats with > 8-bits wide channels)
-		if (rsx::method_registers.surface_color() == rsx::surface_color_format::w16z16y16x16)
+		if (regs.surface_color() == rsx::surface_color_format::w16z16y16x16)
 		{
-			u16 blend_color_r = rsx::method_registers.blend_color_16b_r();
-			u16 blend_color_g = rsx::method_registers.blend_color_16b_g();
-			u16 blend_color_b = rsx::method_registers.blend_color_16b_b();
-			u16 blend_color_a = rsx::method_registers.blend_color_16b_a();
+			u16 blend_color_r = regs.blend_color_16b_r();
+			u16 blend_color_g = regs.blend_color_16b_g();
+			u16 blend_color_b = regs.blend_color_16b_b();
+			u16 blend_color_a = regs.blend_color_16b_a();
 
 			return { blend_color_r / 65535.f, blend_color_g / 65535.f, blend_color_b / 65535.f, blend_color_a / 65535.f };
 		}
 		else
 		{
-			u8 blend_color_r = rsx::method_registers.blend_color_8b_r();
-			u8 blend_color_g = rsx::method_registers.blend_color_8b_g();
-			u8 blend_color_b = rsx::method_registers.blend_color_8b_b();
-			u8 blend_color_a = rsx::method_registers.blend_color_8b_a();
+			u8 blend_color_r = regs.blend_color_8b_r();
+			u8 blend_color_g = regs.blend_color_8b_g();
+			u8 blend_color_b = regs.blend_color_8b_b();
+			u8 blend_color_a = regs.blend_color_8b_a();
 
 			return { blend_color_r / 255.f, blend_color_g / 255.f, blend_color_b / 255.f, blend_color_a / 255.f };
 		}

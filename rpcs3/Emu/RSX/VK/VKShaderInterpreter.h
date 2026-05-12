@@ -11,6 +11,7 @@ class VKFragmentProgram;
 namespace rsx
 {
 	struct shader_loading_dialog;
+	struct rsx_state;
 }
 
 namespace vk
@@ -92,6 +93,7 @@ namespace vk
 		void preload(rsx::shader_loading_dialog* dlg);
 
 		glsl::program* get(
+			rsx::rsx_state& regs,
 			const vk::pipeline_props& properties,
 			const program_hash_util::fragment_program_utils::fragment_program_metadata& fp_metadata,
 			const program_hash_util::vertex_program_utils::vertex_program_metadata& vp_metadata,

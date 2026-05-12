@@ -157,38 +157,39 @@ void VKGSRender::invalidate_render_pass()
 
 void VKGSRender::update_draw_state()
 {
+	auto& regs = *m_ctx->register_state;
 	m_profiler.start();
 
 	// Update conditional dynamic state
-	if (rsx::method_registers.current_draw_clause.primitive >= rsx::primitive_type::points &&   // AMD/AMDVLK driver does not like it if you render points without setting line width for some reason
-		rsx::method_registers.current_draw_clause.primitive <= rsx::primitive_type::line_strip)
+	if (regs.current_draw_clause.primitive >= rsx::primitive_type::points &&   // AMD/AMDVLK driver does not like it if you render points without setting line width for some reason
+		regs.current_draw_clause.primitive <= rsx::primitive_type::line_strip)
 	{
 		const float actual_line_width =
-			m_device->get_wide_lines_support() ? rsx::method_registers.line_width() * resolution_scaling_config.scale_factor() : 1.f;
+			m_device->get_wide_lines_support() ? regs.line_width() * resolution_scaling_config.scale_factor() : 1.f;
 		vkCmdSetLineWidth(*m_current_command_buffer, actual_line_width);
 	}
 
-	if (rsx::method_registers.blend_enabled())
+	if (regs.blend_enabled())
 	{
 		// Update blend constants
-		auto blend_colors = rsx::get_constant_blend_colors();
+		auto blend_colors = rsx::get_constant_blend_colors(regs);
 		vkCmdSetBlendConstants(*m_current_command_buffer, blend_colors.data());
 	}
 
-	if (rsx::method_registers.stencil_test_enabled())
+	if (regs.stencil_test_enabled())
 	{
-		const bool two_sided_stencil = rsx::method_registers.two_sided_stencil_test_enabled();
+		const bool two_sided_stencil = regs.two_sided_stencil_test_enabled();
 		VkStencilFaceFlags face_flag = (two_sided_stencil) ? VK_STENCIL_FACE_FRONT_BIT : VK_STENCIL_FRONT_AND_BACK;
 
-		vkCmdSetStencilWriteMask(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_mask());
-		vkCmdSetStencilCompareMask(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_func_mask());
-		vkCmdSetStencilReference(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_func_ref());
+		vkCmdSetStencilWriteMask(*m_current_command_buffer, face_flag, regs.stencil_mask());
+		vkCmdSetStencilCompareMask(*m_current_command_buffer, face_flag, regs.stencil_func_mask());
+		vkCmdSetStencilReference(*m_current_command_buffer, face_flag, regs.stencil_func_ref());
 
 		if (two_sided_stencil)
 		{
-			vkCmdSetStencilWriteMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_mask());
-			vkCmdSetStencilCompareMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_func_mask());
-			vkCmdSetStencilReference(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_func_ref());
+			vkCmdSetStencilWriteMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, regs.back_stencil_mask());
+			vkCmdSetStencilCompareMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, regs.back_stencil_func_mask());
+			vkCmdSetStencilReference(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, regs.back_stencil_func_ref());
 		}
 	}
 
@@ -200,15 +201,15 @@ void VKGSRender::update_draw_state()
 		return;
 	}
 
-	if (rsx::method_registers.poly_offset_fill_enabled())
+	if (regs.poly_offset_fill_enabled())
 	{
 		// offset_bias is the constant factor, multiplied by the implementation factor R
 		// offst_scale is the slope factor, multiplied by the triangle slope factor M
 		// R is implementation dependent and has to be derived empirically for supported implementations.
 		// Lucky for us, only NVIDIA currently supports fixed-point 24-bit depth buffers.
 
-		const auto polygon_offset_scale = rsx::method_registers.poly_offset_scale();
-		auto polygon_offset_bias = rsx::method_registers.poly_offset_bias();
+		const auto polygon_offset_scale = regs.poly_offset_scale();
+		auto polygon_offset_bias = regs.poly_offset_bias();
 
 		if (m_draw_fbo->depth_format() == VK_FORMAT_D24_UNORM_S8_UINT && is_NVIDIA(vk::get_chip_family()))
 		{
@@ -230,17 +231,17 @@ void VKGSRender::update_draw_state()
 	if (m_device->get_depth_bounds_support())
 	{
 		f32 bounds_min, bounds_max;
-		if (rsx::method_registers.depth_bounds_test_enabled())
+		if (regs.depth_bounds_test_enabled())
 		{
 			// Update depth bounds min/max
-			bounds_min = rsx::method_registers.depth_bounds_min();
-			bounds_max = rsx::method_registers.depth_bounds_max();
+			bounds_min = regs.depth_bounds_min();
+			bounds_max = regs.depth_bounds_max();
 		}
 		else
 		{
 			// Avoid special case where min=max and depth bounds (incorrectly) fails
-			bounds_min = std::min(0.f, rsx::method_registers.clip_min());
-			bounds_max = std::max(1.f, rsx::method_registers.clip_max());
+			bounds_min = std::min(0.f, regs.clip_min());
+			bounds_max = std::max(1.f, regs.clip_max());
 		}
 
 		if (!m_device->get_unrestricted_depth_range_support())
@@ -261,6 +262,7 @@ void VKGSRender::update_draw_state()
 
 void VKGSRender::load_texture_env()
 {
+	auto& regs = *m_ctx->register_state;
 	// Load textures
 	bool check_for_cyclic_refs = false;
 	auto check_surface_cache_sampler_valid = [&](auto descriptor, const auto& tex)
@@ -296,7 +298,7 @@ void VKGSRender::load_texture_env()
 		}
 
 		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
-		const auto& tex = rsx::method_registers.fragment_textures[i];
+		const auto& tex = regs.fragment_textures[i];
 		const auto previous_format_class = fs_sampler_state[i]->format_class;
 
 		if (!m_samplers_dirty &&
@@ -533,7 +535,7 @@ void VKGSRender::load_texture_env()
 		}
 
 		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(vs_sampler_state[i].get());
-		const auto& tex = rsx::method_registers.vertex_textures[i];
+		const auto& tex = regs.vertex_textures[i];
 		const auto previous_format_class = sampler_state->format_class;
 
 		if (!m_samplers_dirty &&
@@ -546,7 +548,7 @@ void VKGSRender::load_texture_env()
 		const bool is_sampler_dirty = m_vertex_textures_dirty[i];
 		m_vertex_textures_dirty[i] = false;
 
-		if (!rsx::method_registers.vertex_textures[i].enabled())
+		if (!regs.vertex_textures[i].enabled())
 		{
 			*sampler_state = {};
 			continue;
@@ -633,6 +635,7 @@ void VKGSRender::load_texture_env()
 
 bool VKGSRender::bind_texture_env()
 {
+	auto& regs = *m_ctx->register_state;
 	bool out_of_memory = false;
 
 	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
@@ -652,7 +655,7 @@ bool VKGSRender::bind_texture_env()
 		vk::image_view* view = nullptr;
 		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
 
-		if (rsx::method_registers.fragment_textures[i].enabled() &&
+		if (regs.fragment_textures[i].enabled() &&
 			sampler_state->validate())
 		{
 			if (view = sampler_state->image_handle; !view)
@@ -728,7 +731,7 @@ bool VKGSRender::bind_texture_env()
 			break;
 		}
 
-		if (!rsx::method_registers.vertex_textures[i].enabled())
+		if (!regs.vertex_textures[i].enabled())
 		{
 			const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
 			m_program->bind_uniform({ *vk::null_image_view(*m_current_command_buffer, view_type), vk::null_sampler() },
@@ -773,6 +776,7 @@ bool VKGSRender::bind_texture_env()
 
 bool VKGSRender::bind_interpreter_texture_env()
 {
+	auto& regs = *m_ctx->register_state;
 	if (current_fp_metadata.referenced_textures_mask == 0)
 	{
 		// Nothing to do
@@ -819,7 +823,7 @@ bool VKGSRender::bind_interpreter_texture_env()
 		vk::image_view* view = nullptr;
 		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
 
-		if (rsx::method_registers.fragment_textures[i].enabled() &&
+		if (regs.fragment_textures[i].enabled() &&
 			sampler_state->validate())
 		{
 			if (view = sampler_state->image_handle; !view)
@@ -850,7 +854,8 @@ bool VKGSRender::bind_interpreter_texture_env()
 
 void VKGSRender::emit_geometry(u32 sub_index)
 {
-	auto &draw_call = rsx::method_registers.current_draw_clause;
+	auto& regs = *m_ctx->register_state;
+	auto &draw_call = regs.current_draw_clause;
 	m_profiler.start();
 
 	const rsx::flags32_t vertex_state_mask = rsx::vertex_base_changed | rsx::vertex_arrays_changed;
@@ -866,7 +871,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		for (auto& info : m_vertex_layout.interleaved_blocks)
 		{
 			info->vertex_range.second = 0;
-			const auto vertex_base_offset = rsx::method_registers.vertex_data_base_offset();
+			const auto vertex_base_offset = regs.vertex_data_base_offset();
 			info->real_offset_address = rsx::get_address(rsx::get_vertex_offset_from_base(vertex_base_offset, info->base_offset), info->memory_location);
 		}
 	}
@@ -952,7 +957,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		update_descriptors = true;
 
 		// Allocate stream layout memory for this batch
-		const u64 alloc_size = rsx::method_registers.current_draw_clause.pass_count() * 168;
+		const u64 alloc_size = regs.current_draw_clause.pass_count() * 168;
 		m_vertex_layout_dynamic_offset = m_vertex_layout_ring_info.alloc<8>(alloc_size);
 	}
 
@@ -1049,7 +1054,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		{
 			vkCmdDrawIndexed(*m_current_command_buffer, upload_info.vertex_draw_count, draw_call.pass_count(), 0, 0, 0);
 		}
-		else if (rsx::method_registers.current_draw_clause.is_single_draw())
+		else if (regs.current_draw_clause.is_single_draw())
 		{
 			vkCmdDrawIndexed(*m_current_command_buffer, upload_info.vertex_draw_count, 1, 0, 0, 0);
 		}
@@ -1119,6 +1124,7 @@ void VKGSRender::begin()
 
 void VKGSRender::end()
 {
+	auto& regs = *m_ctx->register_state;
 	if (skip_current_frame || !m_graphics_state.test(rsx::rtt_config_valid) || swapchain_unavailable || cond_render_ctrl.disable_rendering())
 	{
 		execute_nop_draw();
@@ -1240,7 +1246,7 @@ void VKGSRender::end()
 		m_current_command_buffer->flags |= vk::command_buffer::cb_reload_dynamic_state;
 	}
 
-	auto& draw_call = rsx::method_registers.current_draw_clause;
+	auto& draw_call = regs.current_draw_clause;
 	draw_call.begin();
 	do
 	{

@@ -14,6 +14,8 @@ extern "C"
 
 namespace rsx
 {
+	struct rsx_state;
+
 	// Import address_range32 utilities
 	using utils::address_range32;
 	using utils::address_range_vector32;
@@ -469,6 +471,7 @@ namespace rsx
 	void clip_image_may_overlap(u8 *dst, const u8 *src, int clip_x, int clip_y, int clip_w, int clip_h, int bpp, int src_pitch, int dst_pitch, u8* buffer);
 
 	std::array<float, 4> get_constant_blend_colors();
+	std::array<float, 4> get_constant_blend_colors(const rsx_state& regs);
 
 	/**
 	 * Shuffle texel layout from xyzw to wzyx

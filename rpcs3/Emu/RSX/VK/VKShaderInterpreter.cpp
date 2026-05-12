@@ -548,6 +548,7 @@ namespace vk
 	}
 
 	glsl::program* shader_interpreter::get(
+		rsx::rsx_state& regs,
 		const vk::pipeline_props& properties,
 		const program_hash_util::fragment_program_utils::fragment_program_metadata& fp_metadata,
 		const program_hash_util::vertex_program_utils::vertex_program_metadata& vp_metadata,
@@ -558,9 +559,9 @@ namespace vk
 		key.compiler_opt = 0;
 		key.properties = properties;
 
-		if (rsx::method_registers.alpha_test_enabled()) [[unlikely]]
+		if (regs.alpha_test_enabled()) [[unlikely]]
 		{
-			switch (rsx::method_registers.alpha_func())
+			switch (regs.alpha_func())
 			{
 			case rsx::comparison_function::always:
 				break;
@@ -593,7 +594,7 @@ namespace vk
 		if (fp_metadata.referenced_textures_mask) key.compiler_opt |= COMPILER_OPT_ENABLE_TEXTURES;
 		if (fp_metadata.has_branch_instructions) key.compiler_opt |= COMPILER_OPT_ENABLE_FLOW_CTRL;
 		if (fp_metadata.has_pack_instructions) key.compiler_opt |= COMPILER_OPT_ENABLE_PACKING;
-		if (rsx::method_registers.polygon_stipple_enabled()) key.compiler_opt |= COMPILER_OPT_ENABLE_STIPPLING;
+		if (regs.polygon_stipple_enabled()) key.compiler_opt |= COMPILER_OPT_ENABLE_STIPPLING;
 		if (vp_ctrl & RSX_SHADER_CONTROL_INSTANCED_CONSTANTS) key.compiler_opt |= COMPILER_OPT_ENABLE_INSTANCING;
 		if (vp_metadata.referenced_textures_mask) key.compiler_opt |= COMPILER_OPT_ENABLE_VTX_TEXTURES;
 

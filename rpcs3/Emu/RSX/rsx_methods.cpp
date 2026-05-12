@@ -1735,9 +1735,6 @@ namespace rsx
 		// FIFO
 		bind(FIFO::FIFO_DRAW_BARRIER >> 2, fifo::draw_barrier);
 
-		// REGS(ctx)->init();
-		method_registers.init();
-
 		return true;
 	}();
 }
