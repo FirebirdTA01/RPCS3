@@ -1337,6 +1337,12 @@ error_code sys_fs_write(ppu_thread& ppu, u32 fd, vm::cptr<void> buf, u64 nbytes,
 		file->file.seek(0, fs::seek_end);
 	}
 
+	if (nbytes > u32{umax} || !vm::check_addr(buf.addr(), vm::page_readable, static_cast<u32>(nbytes)))
+	{
+		nwrite.try_write(0);
+		return CELL_EFAULT;
+	}
+
 	const u64 written = file->op_write(buf, nbytes);
 	lock.unlock();
 	ppu.check_state();
