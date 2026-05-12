@@ -1079,7 +1079,7 @@ namespace vk
 				}
 				else
 				{
-					src_address = uptr(base_addr) - uptr(vm::g_base_addr);
+					src_address = uptr(base_addr) - uptr(vm::base());
 				}
 
 				auto dma_mapping = vk::map_dma(static_cast<u32>(src_address), static_cast<u32>(data_length));

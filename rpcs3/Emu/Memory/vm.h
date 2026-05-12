@@ -334,6 +334,14 @@ namespace vm
 		return base + static_cast<u32>(vm::cast(addr));
 	}
 
+	inline u8* base()
+	{
+		auto* cpu = get_current_cpu_thread();
+		if (cpu) return cpu->memory_base_addr;
+		if (g_host_thread_vm_base) return g_host_thread_vm_base;
+		return g_base_addr;
+	}
+
 	inline const u8& read8(u32 addr)
 	{
 		auto* cpu = get_current_cpu_thread();
