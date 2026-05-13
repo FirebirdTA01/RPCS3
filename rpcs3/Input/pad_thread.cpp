@@ -23,11 +23,16 @@
 #include "Emu/Io/PadHandler.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/system_config.h"
 #include "Emu/RSX/Overlays/HomeMenu/overlay_home_menu.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
+#include "Emu/RSX/VK/VKOverlayCapture.h"
 #include "Emu/Cell/lv2/sys_usbd.h"
+#include "Emu/Cell/lv2/sys_sm.h"
+#include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/Modules/cellGem.h"
+#include "Emu/Cell/Modules/cellPad.h"
 #include "Emu/Cell/timers.hpp"
 #include "Utilities/Thread.h"
 #include "util/atomic.hpp"
@@ -35,8 +40,12 @@
 LOG_CHANNEL(sys_log, "SYS");
 
 extern void pad_state_notify_state_change(usz index, u32 state);
+extern bool send_sys_io_connect_event_for_pid(u32 owner_pid, usz index, u32 state);
 extern bool is_input_allowed();
 extern std::string g_input_config_override;
+extern bool send_open_home_menu_cmds();
+extern void send_close_home_menu_cmds();
+extern bool close_osk_from_ps_button();
 
 namespace pad
 {
@@ -52,6 +61,34 @@ namespace pad
 namespace rsx
 {
 	void set_native_ui_flip();
+}
+
+namespace
+{
+	bool pad_ps_button_pressed(const std::shared_ptr<Pad>& pad)
+	{
+		if (!pad->is_connected())
+		{
+			return false;
+		}
+
+		// Check if an LDD pad pressed the PS button (bit 0 of the first button)
+		// NOTE: Rock Band 3 doesn't seem to care about the len. It's always 0.
+		if (pad->ldd /*&& pad->ldd_data.len >= 1 */&& !!(pad->ldd_data.button[0] & CELL_PAD_CTRL_LDD_PS))
+		{
+			return true;
+		}
+
+		for (const Button& button : pad->m_buttons)
+		{
+			if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL1 && button.m_outKeyCode == CELL_PAD_CTRL_PS && button.m_pressed)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
 }
 
 struct pad_setting
@@ -657,16 +694,16 @@ void pad_thread::operator()()
 		// Home-menu intercept gate. Three cases:
 		//   1) !vsh_coresident                       -> host RPCS3 overlay (direct-launch).
 		//   2) vsh_coresident &&  active_is_vsh      -> no host intercept (VSH owns its native XMB).
-		//   3) vsh_coresident && !active_is_vsh      -> route to VSH XMB. Currently falls back to
-		//      host overlay; replaced when foreground routing lands.
+		//   3) vsh_coresident && !active_is_vsh      -> optional VSH-native routing; otherwise host fallback.
 		const bool vsh_coresident = Emu.IsVshCoResident();
 		const bool active_is_vsh  = Emu.IsActiveProcessVsh();
+		const bool use_vsh_native_overlay = Emu.UseVshNativeOverlay();
 		bool use_host_overlay;
 		if (!vsh_coresident)      use_host_overlay = true;   // case 1
 		else if (active_is_vsh)   use_host_overlay = false;  // case 2
-		else                      use_host_overlay = true;   // case 3 (fall-back until VSH routing lands)
+		else                      use_host_overlay = !use_vsh_native_overlay; // case 3
 
-		if (use_host_overlay && !m_home_menu_open && Emu.IsRunning())
+		if (!active_is_vsh && vsh_coresident && use_vsh_native_overlay && Emu.IsRunning())
 		{
 			bool ps_button_pressed = false;
 
@@ -677,25 +714,51 @@ void pad_thread::operator()()
 
 				const auto& pad = m_pads[i];
 
-				if (!pad->is_connected())
-					continue;
+				ps_button_pressed = pad_ps_button_pressed(pad);
+			}
 
-				// Check if an LDD pad pressed the PS button (bit 0 of the first button)
-				// NOTE: Rock Band 3 doesn't seem to care about the len. It's always 0.
-				if (pad->ldd /*&& pad->ldd_data.len >= 1 */&& !!(pad->ldd_data.button[0] & CELL_PAD_CTRL_LDD_PS))
-				{
-					ps_button_pressed = true;
-					break;
-				}
+			const bool requested = pad::g_home_menu_requested.exchange(false);
+			if ((ps_button_pressed && !m_ps_button_pressed) || requested)
+			{
+				MPDBG_LOG(sys_log, "PAD_NATIVE_OVERLAY_REQUEST: active_pid=%u input_pid=%u ps_edge=%d requested=%d",
+					Emu.current_process().pid(), Emu.GetInputForegroundPid(), ps_button_pressed && !m_ps_button_pressed, requested);
 
-				for (const Button& button : pad->m_buttons)
+				const bool opened = send_open_home_menu_cmds();
+				MPDBG_LOG(sys_log, "PAD_NATIVE_OVERLAY_OPEN_RESULT: opened=%d", opened);
+
+				if (opened)
 				{
-					if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL1 && button.m_outKeyCode == CELL_PAD_CTRL_PS && button.m_pressed)
+					fxo::get<vk::vsh_overlay_state>().set_overlay_active(true);
+					sys_sm_queue_ext_event2(7);
+					Emu.SetInputForegroundPid(1);
+
+					bool queued_vsh_ps = false;
+					if (auto* vsh_pad = Emu.process_by_pid(1).local_fxo().try_get<pad_info>())
 					{
-						ps_button_pressed = true;
-						break;
+						vsh_pad->queue_ps_press(0);
+						queued_vsh_ps = true;
 					}
+
+					const bool signaled_vsh_pad = send_sys_io_connect_event_for_pid(1, 0, CELL_PAD_STATUS_CONNECTED);
+					Emu.resume_process(1);
+					lv2_obj::clear_scheduler_pending_for_pid(1);
+					MPDBG_LOG(sys_log, "PAD_NATIVE_OVERLAY_ACTIVATED: input_pid=%u queued_vsh_ps=%d signaled_vsh_pad=%d",
+						Emu.GetInputForegroundPid(), queued_vsh_ps, signaled_vsh_pad ? 1 : 0);
 				}
+			}
+
+			m_ps_button_pressed = ps_button_pressed;
+		}
+		else if (use_host_overlay && !m_home_menu_open && Emu.IsRunning())
+		{
+			bool ps_button_pressed = false;
+
+			for (usz i = 0; i < m_pads.size() && !ps_button_pressed; i++)
+			{
+				if (i > 0 && g_cfg.io.lock_overlay_input_to_player_one)
+					break;
+
+				ps_button_pressed = pad_ps_button_pressed(m_pads[i]);
 			}
 
 			// Make sure we call this function only once per button press
@@ -915,10 +978,6 @@ void pad_thread::InitPadConfig(cfg_pad& cfg, pad_handler type, std::shared_ptr<P
 	// Set and apply actual defaults depending on pad handler
 	handler->init_config(&cfg);
 }
-
-extern bool send_open_home_menu_cmds();
-extern void send_close_home_menu_cmds();
-extern bool close_osk_from_ps_button();
 
 void pad_thread::open_home_menu()
 {

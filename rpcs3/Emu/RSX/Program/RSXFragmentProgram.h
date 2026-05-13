@@ -212,9 +212,10 @@ struct RSXFragmentProgram
 		}
 
 		data_storage_helper(data_storage_helper&& other) noexcept
-			: data_ptr(other.data_ptr)
-			, local_storage(std::move(other.local_storage))
 		{
+			const bool owns_local_data = other.data_ptr == other.local_storage.data();
+			local_storage = std::move(other.local_storage);
+			data_ptr = owns_local_data ? local_storage.data() : other.data_ptr;
 			other.data_ptr = nullptr;
 		}
 
@@ -240,8 +241,9 @@ struct RSXFragmentProgram
 		{
 			if (this == &other) return *this;
 
-			data_ptr = other.data_ptr;
+			const bool owns_local_data = other.data_ptr == other.local_storage.data();
 			local_storage = std::move(other.local_storage);
+			data_ptr = owns_local_data ? local_storage.data() : other.data_ptr;
 			other.data_ptr = nullptr;
 
 			return *this;

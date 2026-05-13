@@ -200,6 +200,7 @@ namespace rsx
 		u32 last_known_code_start = 0;
 		atomic_t<u32> external_interrupt_lock{ 0 };
 		atomic_t<bool> external_interrupt_ack{ false };
+		atomic_t<bool> memory_unmap_in_progress{ false };
 		atomic_t<u32> is_initialized{0};
 
 		bool is_fifo_idle() const;
@@ -291,6 +292,8 @@ namespace rsx
 
 		RSXVertexProgram current_vertex_program = {};
 		RSXFragmentProgram current_fragment_program = {};
+		u32 current_fragment_program_guest_addr = umax;
+		u32 current_fragment_program_offset = umax;
 
 		vertex_program_texture_state current_vp_texture_state = {};
 		fragment_program_texture_state current_fp_texture_state = {};
@@ -298,10 +301,10 @@ namespace rsx
 		program_cache_hint_t m_program_cache_hint;
 
 		// Runs shader prefetch and resolves pipeline status flags
-		void analyse_current_rsx_pipeline();
+		bool analyse_current_rsx_pipeline();
 
 		// Prefetch and analyze the currently active fragment program ucode
-		void prefetch_fragment_program();
+		bool prefetch_fragment_program();
 
 		// Prefetch and analyze the currently active vertex program ucode
 		void prefetch_vertex_program();

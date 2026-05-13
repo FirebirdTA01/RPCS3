@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "Emu/Cell/lv2/sys_event.h"
@@ -15,6 +16,8 @@ extern void cellMouse_init();
 
 struct libio_sys_config
 {
+	using is_process_local = std::true_type;
+
 	shared_mutex mtx;
 	s32 init_ctr = 0;
 	u32 ppu_id = 0;
@@ -33,7 +36,7 @@ struct libio_sys_config
 extern void sys_io_serialize(utils::serial& ar)
 {
 	// Do not assign a serialization tag for now, call it from cellPad serialization
-	ensure(g_fxo->try_get<libio_sys_config>())->save_or_load(ar);
+	ensure(fxo::try_get<libio_sys_config>())->save_or_load(ar);
 }
 
 extern bool cellPad_NotifyStateChange(usz index, u64 state, bool lock = true, bool is_blocking = true);
@@ -42,7 +45,7 @@ void config_event_entry(ppu_thread& ppu)
 {
 	ppu.state += cpu_flag::wait;
 
-	auto& cfg = *ensure(g_fxo->try_get<libio_sys_config>());
+	auto& cfg = *ensure(fxo::try_get<libio_sys_config>());
 
 	if (!ppu.loaded_from_savestate)
 	{
@@ -128,26 +131,98 @@ extern void send_sys_io_connect_event(usz index, u32 state)
 		return;
 	}
 
-	auto& cfg = g_fxo->get<libio_sys_config>();
-
-	auto lock = lock_lv2_mutex_alike(cfg.mtx, cpu_thread::get_current<ppu_thread>());
-
-	if (cfg.init_ctr)
+	const auto send_to_cfg = [&](libio_sys_config& cfg, ppu_thread* ppu, u32 owner_pid)
 	{
-		if (auto port = idm::get_unlocked<lv2_obj, lv2_event_queue>(cfg.queue_id))
+		auto lock = lock_lv2_mutex_alike(cfg.mtx, ppu);
+
+		if (cfg.init_ctr)
 		{
-			port->send(0, 1, index, state);
+			const u32 old_host_owner_pid = id_manager::g_host_thread_owner_pid;
+			if (!ppu)
+			{
+				id_manager::g_host_thread_owner_pid = owner_pid;
+			}
+
+			if (auto port = idm::get_unlocked<lv2_obj, lv2_event_queue>(cfg.queue_id))
+			{
+				port->send(0, 1, index, state);
+			}
+
+			if (!ppu)
+			{
+				id_manager::g_host_thread_owner_pid = old_host_owner_pid;
+			}
+		}
+	};
+
+	if (auto* ppu = cpu_thread::get_current<ppu_thread>())
+	{
+		send_to_cfg(fxo::get<libio_sys_config>(), ppu, ppu->owner_pid);
+		return;
+	}
+
+	// Host pad threads are not bound to one guest process. Notify every live
+	// process-local sys_io config that has initialized a queue.
+	for (u32 pid = 1; pid <= 2; ++pid)
+	{
+		if (!Emu.get_process_vm_base(pid))
+		{
+			continue;
+		}
+
+		if (auto* cfg = Emu.process_by_pid(pid).local_fxo().try_get<libio_sys_config>())
+		{
+			send_to_cfg(*cfg, nullptr, pid);
 		}
 	}
+}
+
+extern bool send_sys_io_connect_event_for_pid(u32 owner_pid, usz index, u32 state)
+{
+	if (!Emu.get_process_vm_base(owner_pid))
+	{
+		return false;
+	}
+
+	auto* cfg = Emu.process_by_pid(owner_pid).local_fxo().try_get<libio_sys_config>();
+	if (!cfg)
+	{
+		return false;
+	}
+
+	auto lock = lock_lv2_mutex_alike(cfg->mtx, nullptr);
+	if (!cfg->init_ctr)
+	{
+		return false;
+	}
+
+	const u32 old_host_owner_pid = id_manager::g_host_thread_owner_pid;
+	id_manager::g_host_thread_owner_pid = owner_pid;
+
+	bool sent = false;
+	if (auto port = idm::get_unlocked<lv2_obj, lv2_event_queue>(cfg->queue_id))
+	{
+		port->send(0, 1, index, state);
+		sent = true;
+	}
+
+	id_manager::g_host_thread_owner_pid = old_host_owner_pid;
+
+	MPDBG_LOG(sys_io, "SYS_IO_CONFIG_TARGETED_CONNECT_EVENT: owner_pid=%u port=%u state=0x%x sent=%d queue_id=0x%x",
+		owner_pid, static_cast<u32>(index), state, sent ? 1 : 0, cfg->queue_id);
+
+	return sent;
 }
 
 error_code sys_config_start(ppu_thread& ppu)
 {
 	sys_io.warning("sys_config_start()");
 
-	auto& cfg = g_fxo->get<libio_sys_config>();
+	auto& cfg = fxo::get<libio_sys_config>();
 
 	auto lock = lock_lv2_mutex_alike(cfg.mtx, &ppu);
+	MPDBG_LOG(sys_io, "SYS_IO_CONFIG_START: owner_pid=%u init_ctr_before=%d queue_id=0x%x ppu_id=0x%x",
+		ppu.owner_pid, cfg.init_ctr, cfg.queue_id, cfg.ppu_id);
 
 	if (cfg.init_ctr++ == 0)
 	{
@@ -161,15 +236,24 @@ error_code sys_config_start(ppu_thread& ppu)
 		attr->type = SYS_PPU_QUEUE;
 		attr->name_u64 = 0;
 
-		ensure(CELL_OK == sys_event_queue_create(ppu, queue_id, attr, 0, 0x20));
+		const error_code create_result = sys_event_queue_create(ppu, queue_id, attr, 0, 0x20);
+		MPDBG_LOG(sys_io, "SYS_IO_CONFIG_QUEUE_CREATE: owner_pid=%u result=%s",
+			ppu.owner_pid, CellError{create_result + 0u});
+		ensure(CELL_OK == create_result);
 		ppu.check_state();
 		cfg.queue_id = *queue_id;
 
-		ensure(CELL_OK == ppu_execute<&sys_ppu_thread_create>(ppu, +_tid, fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(config_event_entry)), 0, 512, 0x2000, SYS_PPU_THREAD_CREATE_JOINABLE, +_name));
+		const error_code thread_result = ppu_execute<&sys_ppu_thread_create>(ppu, +_tid, fxo::get<ppu_function_manager>().func_addr(FIND_FUNC(config_event_entry)), 0, 512, 0x2000, SYS_PPU_THREAD_CREATE_JOINABLE, +_name);
+		MPDBG_LOG(sys_io, "SYS_IO_CONFIG_THREAD_CREATE: owner_pid=%u result=%s queue_id=0x%x",
+			ppu.owner_pid, CellError{thread_result + 0u}, cfg.queue_id);
+		ensure(CELL_OK == thread_result);
 		ppu.check_state();
 
 		cfg.ppu_id = static_cast<u32>(*_tid);
 	}
+
+	MPDBG_LOG(sys_io, "SYS_IO_CONFIG_START_DONE: owner_pid=%u init_ctr_after=%d queue_id=0x%x ppu_id=0x%x",
+		ppu.owner_pid, cfg.init_ctr, cfg.queue_id, cfg.ppu_id);
 
 	return CELL_OK;
 }
@@ -178,20 +262,31 @@ error_code sys_config_stop(ppu_thread& ppu)
 {
 	sys_io.warning("sys_config_stop()");
 
-	auto& cfg = g_fxo->get<libio_sys_config>();
+	auto& cfg = fxo::get<libio_sys_config>();
 
 	auto lock = lock_lv2_mutex_alike(cfg.mtx, &ppu);
+	MPDBG_LOG(sys_io, "SYS_IO_CONFIG_STOP: owner_pid=%u init_ctr_before=%d queue_id=0x%x ppu_id=0x%x",
+		ppu.owner_pid, cfg.init_ctr, cfg.queue_id, cfg.ppu_id);
 
 	if (cfg.init_ctr && cfg.init_ctr-- == 1)
 	{
-		ensure(CELL_OK == sys_event_queue_destroy(ppu, cfg.queue_id, SYS_EVENT_QUEUE_DESTROY_FORCE));
+		const error_code destroy_result = sys_event_queue_destroy(ppu, cfg.queue_id, SYS_EVENT_QUEUE_DESTROY_FORCE);
+		MPDBG_LOG(sys_io, "SYS_IO_CONFIG_QUEUE_DESTROY: owner_pid=%u result=%s queue_id=0x%x",
+			ppu.owner_pid, CellError{destroy_result + 0u}, cfg.queue_id);
+		ensure(CELL_OK == destroy_result);
 		ppu.check_state();
-		ensure(CELL_OK == sys_ppu_thread_join(ppu, cfg.ppu_id, +vm::var<u64>{}));
+		const error_code join_result = sys_ppu_thread_join(ppu, cfg.ppu_id, +vm::var<u64>{});
+		MPDBG_LOG(sys_io, "SYS_IO_CONFIG_THREAD_JOIN: owner_pid=%u result=%s ppu_id=0x%x",
+			ppu.owner_pid, CellError{join_result + 0u}, cfg.ppu_id);
+		ensure(CELL_OK == join_result);
 	}
 	else
 	{
 		// TODO: Unknown error
 	}
+
+	MPDBG_LOG(sys_io, "SYS_IO_CONFIG_STOP_DONE: owner_pid=%u init_ctr_after=%d queue_id=0x%x ppu_id=0x%x",
+		ppu.owner_pid, cfg.init_ctr, cfg.queue_id, cfg.ppu_id);
 
 	return CELL_OK;
 }

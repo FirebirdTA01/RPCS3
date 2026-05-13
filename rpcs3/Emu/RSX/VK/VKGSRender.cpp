@@ -9,6 +9,7 @@
 #include "VKCompute.h"
 #include "VKGSRender.h"
 #include "VKHelpers.h"
+#include "VKOverlayCapture.h"
 #include "VKRenderPass.h"
 #include "VKResourceManager.h"
 #include "vk_host_context.h"
@@ -752,6 +753,11 @@ VKGSRender::~VKGSRender()
 
 	//Wait for device to finish up with resources
 	vkDeviceWaitIdle(*m_device);
+
+	if (fxo::is_init<vk::vsh_overlay_state>())
+	{
+		fxo::get<vk::vsh_overlay_state>().reset();
+	}
 
 	// Globals. TODO: Refactor lifetime management
 	if (auto async_scheduler = g_fxo->try_get<vk::AsyncTaskScheduler>())
@@ -1810,6 +1816,14 @@ bool VKGSRender::load_program()
 
 	if (shadermode != shader_mode::interpreter_only) [[likely]]
 	{
+		RSXFragmentProgram fragment_program_snapshot;
+		if (!program_hash_util::fragment_program_utils::snapshot_fragment_program_ucode(fragment_program, fragment_program_snapshot))
+		{
+			return false;
+		}
+
+		current_fragment_program = std::move(fragment_program_snapshot);
+
 		vk::enter_uninterruptible();
 
 		if (g_cfg.video.debug_overlay)

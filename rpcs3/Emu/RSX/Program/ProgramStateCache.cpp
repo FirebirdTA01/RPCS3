@@ -2,8 +2,10 @@
 #include "ProgramStateCache.h"
 #include "FragmentProgramDecompiler.h"
 #include "Emu/system_config.h"
+#include "Emu/Memory/vm_locking.h"
 #include "Emu/RSX/Core/RSXDriverState.h"
 #include "util/sysinfo.hpp"
+#include "Utilities/deferred_op.hpp"
 
 #include <stack>
 
@@ -698,6 +700,113 @@ fragment_program_utils::fragment_program_metadata fragment_program_utils::analys
 	return result;
 }
 
+bool fragment_program_utils::analyse_fragment_program(const void* ptr, usz max_bytes, fragment_program_metadata& dst)
+{
+	const auto instBuffer = ptr;
+	dst = {};
+	dst.program_start_offset = -1;
+
+	if (!ptr || max_bytes < 16)
+	{
+		return false;
+	}
+
+	s32 index = 0;
+	const auto can_read = [&](s32 inst_index)
+	{
+		return inst_index >= 0 && (static_cast<usz>(inst_index) + 1) * 16 <= max_bytes;
+	};
+
+	while (can_read(index))
+	{
+		const auto inst = v128::loadu(instBuffer, index);
+		const u32 opcode = (inst._u32[0] >> 16) & 0x3F;
+		if (opcode)
+		{
+			dst.program_start_offset = index * 16;
+			break;
+		}
+
+		if ((inst._u32[0] >> 8) & 0x1)
+		{
+			dst.program_start_offset = index * 16;
+			dst.program_ucode_length = 16;
+			dst.is_nop_shader = true;
+			return true;
+		}
+
+		index++;
+	}
+
+	if (dst.program_start_offset == static_cast<u32>(-1))
+	{
+		return false;
+	}
+
+	while (can_read(index))
+	{
+		const auto inst = v128::loadu(instBuffer, index);
+		const auto d0 = OPDEST::from_be32(inst._u32[0]);
+		const auto opcode = static_cast<rsx::assembler::FP_opcode>(d0.opcode);
+
+		switch (opcode)
+		{
+		case RSX_FP_OPCODE_TEX:
+		case RSX_FP_OPCODE_TEXBEM:
+		case RSX_FP_OPCODE_TXP:
+		case RSX_FP_OPCODE_TXPBEM:
+		case RSX_FP_OPCODE_TXD:
+		case RSX_FP_OPCODE_TXB:
+		case RSX_FP_OPCODE_TXL:
+			dst.referenced_textures_mask |= (1 << d0.tex_num);
+			dst.bx2_texture_reads_mask |= ((d0.exp_tex ? 1u : 0u) << d0.tex_num);
+			break;
+		case RSX_FP_OPCODE_PK4:
+		case RSX_FP_OPCODE_UP4:
+		case RSX_FP_OPCODE_PK2:
+		case RSX_FP_OPCODE_UP2:
+		case RSX_FP_OPCODE_PKB:
+		case RSX_FP_OPCODE_UPB:
+		case RSX_FP_OPCODE_PK16:
+		case RSX_FP_OPCODE_UP16:
+		case RSX_FP_OPCODE_PKG:
+		case RSX_FP_OPCODE_UPG:
+			dst.has_pack_instructions = true;
+			break;
+		case RSX_FP_OPCODE_BRK:
+		case RSX_FP_OPCODE_CAL:
+		case RSX_FP_OPCODE_IFE:
+		case RSX_FP_OPCODE_LOOP:
+		case RSX_FP_OPCODE_REP:
+		case RSX_FP_OPCODE_RET:
+			dst.has_branch_instructions = true;
+			break;
+		default:
+			break;
+		}
+
+		if (is_any_src_constant(inst))
+		{
+			index++;
+			dst.program_constants_buffer_length += 16;
+			if (!can_read(index))
+			{
+				return false;
+			}
+		}
+
+		index++;
+
+		if ((inst._u32[0] >> 8) & 0x1)
+		{
+			dst.program_ucode_length = (index - (dst.program_start_offset / 16)) * 16;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 usz fragment_program_utils::get_fragment_program_ucode_hash(const RSXFragmentProgram& program)
 {
 	// Checksum as hash with rotated data
@@ -717,6 +826,139 @@ usz fragment_program_utils::get_fragment_program_ucode_hash(const RSXFragmentPro
 
 	}
 	return acc0 + acc1;
+}
+
+bool fragment_program_utils::snapshot_fragment_program_ucode(const RSXFragmentProgram& src, RSXFragmentProgram& dst)
+{
+	dst = src;
+
+	if (!dst.ucode_length || !dst.get_data())
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode: empty source (data=%p, length=0x%x)",
+			dst.get_data(), dst.ucode_length);
+		return false;
+	}
+
+	if (dst.get_data() == dst.data.local_storage.data())
+	{
+		return true;
+	}
+
+	const auto [addr, ok] = vm::try_get_addr(dst.get_data());
+	if (!ok)
+	{
+		dst.clone_data();
+		return true;
+	}
+
+	if (static_cast<u64>(addr) + dst.ucode_length > umax)
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode: range overflows guest address space (addr=0x%x, length=0x%x)",
+			+addr, dst.ucode_length);
+		return false;
+	}
+
+	if (+addr >= rsx::constants::local_mem_base)
+	{
+		dst.clone_data();
+		return true;
+	}
+
+	if (!vm::check_addr(addr, vm::page_readable, dst.ucode_length))
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode: unreadable guest range before lock (addr=0x%x, length=0x%x)",
+			+addr, dst.ucode_length);
+		return false;
+	}
+
+	auto* range_lock = vm::alloc_range_lock();
+	utils::deferred_op cleanup([&]()
+	{
+		range_lock->release(0);
+		vm::free_range_lock(range_lock);
+	});
+
+	vm::range_lock(range_lock, addr, dst.ucode_length);
+
+	if (!vm::check_addr(addr, vm::page_readable, dst.ucode_length))
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode: unreadable guest range after lock (addr=0x%x, length=0x%x)",
+			+addr, dst.ucode_length);
+		return false;
+	}
+
+	dst.clone_data();
+	return true;
+}
+
+bool fragment_program_utils::snapshot_fragment_program_ucode(u32 guest_addr, u32 rsx_offset, RSXFragmentProgram& dst, fragment_program_metadata& metadata)
+{
+	constexpr u32 max_fragment_program_snapshot_size = 0x10000;
+
+	dst = {};
+	metadata = {};
+	metadata.program_start_offset = -1;
+
+	if (static_cast<u64>(guest_addr) + max_fragment_program_snapshot_size > umax)
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode for prefetch: range overflows guest address space (addr=0x%x, length=0x%x)",
+			guest_addr, max_fragment_program_snapshot_size);
+		return false;
+	}
+
+	const auto copy_and_analyse = [&](const void* source_ptr)
+	{
+		std::vector<char> raw_ucode(max_fragment_program_snapshot_size);
+		std::memcpy(raw_ucode.data(), source_ptr, max_fragment_program_snapshot_size);
+
+		if (!analyse_fragment_program(raw_ucode.data(), raw_ucode.size(), metadata))
+		{
+			rsx_log.error("Failed to analyse fragment program ucode snapshot (addr=0x%x, length=0x%x)",
+				guest_addr, max_fragment_program_snapshot_size);
+			dst = {};
+			return false;
+		}
+
+		dst.data.local_storage.resize(metadata.program_ucode_length);
+		std::memcpy(dst.data.local_storage.data(), raw_ucode.data() + metadata.program_start_offset, metadata.program_ucode_length);
+		dst.data.data_ptr = dst.data.local_storage.data();
+		dst.offset = rsx_offset + metadata.program_start_offset;
+		dst.ucode_length = metadata.program_ucode_length;
+		dst.total_length = metadata.program_start_offset + metadata.program_ucode_length;
+		dst.valid = true;
+
+		return true;
+	};
+
+	if (guest_addr >= rsx::constants::local_mem_base)
+	{
+		return copy_and_analyse(vm::base(guest_addr));
+	}
+
+	if (!vm::check_addr(guest_addr, vm::page_readable, max_fragment_program_snapshot_size))
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode for prefetch: unreadable guest range before lock (addr=0x%x, length=0x%x)",
+			guest_addr, max_fragment_program_snapshot_size);
+		return false;
+	}
+
+	auto* range_lock = vm::alloc_range_lock();
+	utils::deferred_op cleanup([&]()
+	{
+		range_lock->release(0);
+		vm::free_range_lock(range_lock);
+	});
+
+	vm::range_lock(range_lock, guest_addr, max_fragment_program_snapshot_size);
+
+	if (!vm::check_addr(guest_addr, vm::page_readable, max_fragment_program_snapshot_size))
+	{
+		rsx_log.error("Failed to snapshot fragment program ucode for prefetch: unreadable guest range after lock (addr=0x%x, length=0x%x)",
+			guest_addr, max_fragment_program_snapshot_size);
+		return false;
+	}
+
+	return copy_and_analyse(vm::base(guest_addr));
 }
 
 usz fragment_program_storage_hash::operator()(const RSXFragmentProgram& program) const

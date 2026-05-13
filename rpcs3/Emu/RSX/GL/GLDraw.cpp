@@ -861,7 +861,13 @@ void GLGSRender::end()
 		return;
 	}
 
-	analyse_current_rsx_pipeline();
+	if (!analyse_current_rsx_pipeline())
+	{
+		std::this_thread::yield();
+		execute_nop_draw();
+		rsx::thread::end();
+		return;
+	}
 
 	m_frame_stats.setup_time += m_profiler.duration();
 

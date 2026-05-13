@@ -1,10 +1,13 @@
 #include "stdafx.h"
 #include "VKGSRender.h"
+#include "VKOverlayCapture.h"
 #include "vkutils/buffer_object.h"
 #include "vkutils/memory.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/RSX/Overlays/overlay_manager.h"
 #include "Emu/RSX/Overlays/overlay_debug_overlay.h"
 #include "Emu/Cell/Modules/cellVideoOut.h"
+#include "Emu/System.h"
 
 #include "upscalers/bilinear_pass.hpp"
 #include "upscalers/fsr_pass.h"
@@ -418,6 +421,149 @@ vk::viewable_image* VKGSRender::get_present_source(/* inout */ vk::present_surfa
 
 void VKGSRender::flip(const rsx::display_flip_info_t& info)
 {
+	const u32 foreground_pid = Emu.GetForegroundPresentPid();
+	const u32 buffer_offset = info.buffer < display_buffers_count ? display_buffers[info.buffer].offset : umax;
+	const u32 trace_buffer_width = info.buffer < display_buffers_count ? static_cast<u32>(display_buffers[info.buffer].width) : 0;
+	const u32 trace_buffer_height = info.buffer < display_buffers_count ? static_cast<u32>(display_buffers[info.buffer].height) : 0;
+	const u32 trace_buffer_pitch = info.buffer < display_buffers_count ? static_cast<u32>(display_buffers[info.buffer].pitch) : 0;
+
+	MPDBG_LOG(rsx_log, "VK_PRESENT_ENTRY: owner_pid=%u foreground_pid=%u buffer=%u offset=0x%x size=%ux%u pitch=0x%x skip=%d emu_flip=%d swapchain_unavailable=%d draw_calls=%u submit_count=%u",
+		owner_pid, foreground_pid, info.buffer, buffer_offset, trace_buffer_width, trace_buffer_height, trace_buffer_pitch,
+		info.skip_frame ? 1 : 0, info.emu_flip ? 1 : 0, swapchain_unavailable ? 1 : 0, info.stats.draw_calls, info.stats.submit_count);
+
+	const bool foreground_present = owner_pid == foreground_pid;
+
+	MPDBG_LOG(rsx_log, "VK_PRESENT_GATE: owner_pid=%u foreground_pid=%u foreground_present=%d skip=%d swapchain_unavailable=%d current_frame=%p",
+		owner_pid, foreground_pid, foreground_present ? 1 : 0,
+		info.skip_frame ? 1 : 0, swapchain_unavailable ? 1 : 0, static_cast<void*>(m_current_frame));
+
+	if (!foreground_present)
+	{
+		auto& overlay_state = fxo::get<vk::vsh_overlay_state>();
+
+		if (!overlay_state.overlay_active())
+		{
+			MPDBG_LOG(rsx_log, "VK_PRESENT_BRANCH: owner_pid=%u branch=no_submit_non_foreground skip=%d swapchain_unavailable=%d foreground_present=0 overlay_active=0",
+				owner_pid, info.skip_frame ? 1 : 0, swapchain_unavailable ? 1 : 0);
+
+			rsx::thread::flip(info);
+			return;
+		}
+
+		if (Emu.IsStopped())
+		{
+			MPDBG_LOG(rsx_log, "VK_OVERLAY_CAPTURE_DROP: owner_pid=%u reason=emulator_stopping",
+				owner_pid);
+
+			rsx::thread::flip(info);
+			return;
+		}
+
+		vk::viewable_image* image_to_capture = nullptr;
+		u32 capture_width = trace_buffer_width;
+		u32 capture_height = trace_buffer_height;
+		u32 capture_pitch = trace_buffer_pitch;
+		u32 av_format = CELL_GCM_TEXTURE_A8R8G8B8;
+		const auto& avconfig = fxo::get<rsx::avconf>();
+
+		if (info.buffer < display_buffers_count)
+		{
+			if (!capture_width)
+			{
+				capture_width = avconfig.resolution_x;
+				capture_height = avconfig.resolution_y;
+			}
+
+			if (avconfig.state)
+			{
+				av_format = avconfig.get_compatible_gcm_format();
+				if (!capture_pitch)
+				{
+					capture_pitch = capture_width * avconfig.get_bpp();
+				}
+
+				const size2u video_frame_size = avconfig.video_frame_size();
+				capture_width = std::min(capture_width, video_frame_size.width);
+				capture_height = std::min(capture_height, video_frame_size.height);
+			}
+			else if (!capture_pitch)
+			{
+				capture_pitch = capture_width * 4;
+			}
+
+			if (capture_width && capture_height)
+			{
+				vk::present_surface_info present_info
+				{
+					.address = rsx::get_address(display_buffers[info.buffer].offset, CELL_GCM_LOCATION_LOCAL),
+					.format = av_format,
+					.width = capture_width,
+					.height = capture_height,
+					.pitch = capture_pitch,
+					.eye = 0
+				};
+
+				image_to_capture = get_present_source(&present_info, avconfig);
+				capture_width = present_info.width;
+				capture_height = present_info.height;
+			}
+		}
+
+		if (!image_to_capture)
+		{
+			MPDBG_LOG(rsx_log, "VK_OVERLAY_CAPTURE_DROP: owner_pid=%u reason=no_present_source buffer=%u size=%ux%u pitch=0x%x",
+				owner_pid, info.buffer, capture_width, capture_height, capture_pitch);
+
+			rsx::thread::flip(info);
+			return;
+		}
+
+		MPDBG_LOG(rsx_log, "VK_OVERLAY_MAIN_CB_SUBMIT_FOR_CAPTURE: owner_pid=%u cb_generation=%llu",
+			owner_pid, m_current_command_buffer->reset_id);
+
+		// Submit the VSH draw command buffer before the capture copy. This is submit-and-forget;
+		// the large primary CB pool avoids normal slot-reuse waits without touching the host swapchain.
+		close_and_submit_command_buffer();
+		m_current_command_buffer = m_primary_cb_list.next();
+		m_current_command_buffer->reset();
+		m_current_command_buffer->begin();
+
+		vk::vsh_overlay_slot* slot = overlay_state.try_acquire_slot(*m_device, owner_pid, capture_width, capture_height, image_to_capture->format());
+
+		if (!slot)
+		{
+			rsx::thread::flip(info);
+			return;
+		}
+
+		auto& cmd = slot->command_buffer;
+		cmd.reset();
+		cmd.begin();
+
+		const areai src_rect = { 0, 0, static_cast<int>(capture_width), static_cast<int>(capture_height) };
+		const areai dst_rect = src_rect;
+
+		image_to_capture->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		slot->image->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		vk::copy_image(cmd, image_to_capture, slot->image.get(), src_rect, dst_rect, 1);
+		slot->image->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+		cmd.end();
+		cmd.tag();
+
+		vk::queue_submit_t submit_info{ m_device->get_graphics_queue(), nullptr };
+		submit_info.queue_signal(*slot->ready_semaphore);
+		cmd.submit(submit_info, VK_FALSE);
+
+		overlay_state.publish(*slot);
+
+		MPDBG_LOG(rsx_log, "VK_OVERLAY_CAPTURE_SUCCESS: owner_pid=%u generation=%llu slot=%u size=%ux%u format=0x%x",
+			owner_pid, slot->generation.load(), overlay_state.slot_index(*slot), capture_width, capture_height, static_cast<u32>(slot->format));
+
+		rsx::thread::flip(info);
+		return;
+	}
+
 	// Check swapchain condition/status
 	if (!m_swapchain->supports_automatic_wm_reports())
 	{
@@ -485,11 +631,14 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 		frame_context_cleanup(m_current_frame);
 	}
 
-	if (info.skip_frame || swapchain_unavailable)
+	if (info.skip_frame || swapchain_unavailable || !foreground_present)
 	{
+		MPDBG_LOG(rsx_log, "VK_PRESENT_BRANCH: owner_pid=%u branch=skip skip=%d swapchain_unavailable=%d foreground_present=%d",
+			owner_pid, info.skip_frame ? 1 : 0, swapchain_unavailable ? 1 : 0, foreground_present ? 1 : 0);
+
 		if (!info.skip_frame)
 		{
-			ensure(swapchain_unavailable);
+			ensure(swapchain_unavailable || !foreground_present);
 
 			// Perform a mini-flip here without invoking present code
 			m_current_frame->swap_command_buffer = m_current_command_buffer;
@@ -498,10 +647,17 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 			frame_context_cleanup(m_current_frame);
 		}
 
-		m_frame->flip(m_context);
+		if (foreground_present)
+		{
+			m_frame->flip(m_context);
+		}
+
 		rsx::thread::flip(info);
 		return;
 	}
+
+	MPDBG_LOG(rsx_log, "VK_PRESENT_BRANCH: owner_pid=%u branch=queue_swap buffer=%u offset=0x%x size=%ux%u pitch=0x%x",
+		owner_pid, info.buffer, buffer_offset, trace_buffer_width, trace_buffer_height, trace_buffer_pitch);
 
 	u32 buffer_width = display_buffers[info.buffer].width;
 	u32 buffer_height = display_buffers[info.buffer].height;
@@ -959,6 +1115,9 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	}
 
 	queue_swap_request();
+
+	MPDBG_LOG(rsx_log, "VK_PRESENT_QUEUED: owner_pid=%u present_image=%u queued_frames=%zu",
+		owner_pid, m_current_frame ? m_current_frame->present_image : umax, m_queued_frames.size());
 
 	m_frame_stats.flip_time = m_profiler.duration();
 

@@ -27,6 +27,7 @@
 #include "Overlays/overlay_manager.h"
 
 #include "Utilities/date_time.h"
+#include "Utilities/deferred_op.hpp"
 
 #include "util/asm.hpp"
 
@@ -2049,11 +2050,11 @@ namespace rsx
 		return true;
 	}
 
-	void thread::prefetch_fragment_program()
+	bool thread::prefetch_fragment_program()
 	{
 		if (!m_graphics_state.test(rsx::pipeline_state::fragment_program_ucode_dirty))
 		{
-			return;
+			return true;
 		}
 
 		m_graphics_state.clear(rsx::pipeline_state::fragment_program_ucode_dirty);
@@ -2064,15 +2065,28 @@ namespace rsx
 		const auto [program_offset, program_location] = m_ctx->register_state->shader_program_address();
 		const auto prev_textures_reference_mask = current_fp_metadata.referenced_textures_mask;
 
-		auto data_ptr = vm::base(rsx::get_address(program_offset, program_location));
-		current_fp_metadata = program_hash_util::fragment_program_utils::analyse_fragment_program(data_ptr);
+		const u32 guest_addr = rsx::get_address(program_offset, program_location);
+		if (current_fragment_program.valid &&
+			current_fragment_program_guest_addr == guest_addr &&
+			current_fragment_program_offset == program_offset)
+		{
+			current_fragment_program.texture_state.import(current_fp_texture_state, current_fp_metadata.referenced_textures_mask);
+			return true;
+		}
 
-		current_fragment_program.data = (static_cast<u8*>(data_ptr) + current_fp_metadata.program_start_offset);
-		current_fragment_program.offset = program_offset + current_fp_metadata.program_start_offset;
-		current_fragment_program.ucode_length = current_fp_metadata.program_ucode_length;
-		current_fragment_program.total_length = current_fp_metadata.program_ucode_length + current_fp_metadata.program_start_offset;
+		if (!program_hash_util::fragment_program_utils::snapshot_fragment_program_ucode(guest_addr, program_offset, current_fragment_program, current_fp_metadata))
+		{
+			current_fragment_program = {};
+			current_fragment_program_guest_addr = umax;
+			current_fragment_program_offset = umax;
+			current_fp_metadata = {};
+			current_fp_metadata.program_start_offset = -1;
+			return false;
+		}
+
+		current_fragment_program_guest_addr = guest_addr;
+		current_fragment_program_offset = program_offset;
 		current_fragment_program.texture_state.import(current_fp_texture_state, current_fp_metadata.referenced_textures_mask);
-		current_fragment_program.valid = true;
 
 		if (!m_graphics_state.test(rsx::pipeline_state::fragment_program_state_dirty))
 		{
@@ -2096,6 +2110,8 @@ namespace rsx
 			// The texture parameters transfer routine is optimized and only writes data for textures consumed by the ucode.
 			m_graphics_state |= rsx::pipeline_state::fragment_texture_state_dirty;
 		}
+
+		return true;
 	}
 
 	void thread::prefetch_vertex_program()
@@ -2139,12 +2155,12 @@ namespace rsx
 		}
 	}
 
-	void thread::analyse_current_rsx_pipeline()
+	bool thread::analyse_current_rsx_pipeline()
 	{
 		m_program_cache_hint.invalidate(m_graphics_state.load());
 
 		prefetch_vertex_program();
-		prefetch_fragment_program();
+		return prefetch_fragment_program();
 	}
 
 	void thread::get_current_vertex_program(const std::array<std::unique_ptr<rsx::sampled_image_descriptor_base>, rsx::limits::vertex_textures_count>& sampler_descriptors)
@@ -2505,6 +2521,8 @@ namespace rsx
 
 		// Data overlaps. Force ucode reload.
 		m_graphics_state |= rsx::pipeline_state::fragment_program_ucode_dirty;
+		current_fragment_program_guest_addr = umax;
+		current_fragment_program_offset = umax;
 		return true;
 	}
 
@@ -2514,6 +2532,9 @@ namespace rsx
 		check_zcull_status(false);
 		nv4097::set_render_mode(m_ctx, 0, m_ctx->register_state->registers[NV4097_SET_RENDER_ENABLE]);
 		m_graphics_state |= pipeline_state::all_dirty;
+		current_fragment_program = {};
+		current_fragment_program_guest_addr = umax;
+		current_fragment_program_offset = umax;
 	}
 
 	void thread::init(u32 ctrlAddress)
@@ -2574,6 +2595,10 @@ namespace rsx
 
 	void thread::flip(const display_flip_info_t& info)
 	{
+		MPDBG_LOG(rsx_log, "RSX_THREAD_FLIP: owner_pid=%u int_flip_index=%d buffer=%u skip=%d emu_flip=%d in_progress=%d draw_calls=%u async_flags=0x%x",
+			owner_pid, int_flip_index, info.buffer, info.skip_frame ? 1 : 0, info.emu_flip ? 1 : 0,
+			info.in_progress ? 1 : 0, info.stats.draw_calls, static_cast<u32>(async_flip_requested.load()));
+
 		m_eng_interrupt_mask.clear(rsx::display_interrupt);
 
 		if (async_flip_requested & flip_request::any)
@@ -3056,6 +3081,25 @@ namespace rsx
 
 	void thread::on_notify_pre_memory_unmapped(u32 address, u32 size, std::vector<std::pair<u64, u64>>& event_data)
 	{
+		const bool guard_enabled = rsx_thread_running && address < rsx::constants::local_mem_base;
+
+		if (guard_enabled)
+		{
+			memory_unmap_in_progress.release(true);
+			MPDBG_LOG(rsx_log, "RSX_MEMORY_UNMAP_GUARD: owner_pid=%u state=set addr=0x%x size=0x%x",
+				owner_pid, address, size);
+		}
+
+		utils::deferred_op clear_unmap_guard([this, guard_enabled, address, size]()
+		{
+			if (guard_enabled)
+			{
+				memory_unmap_in_progress.release(false);
+				MPDBG_LOG(rsx_log, "RSX_MEMORY_UNMAP_GUARD: owner_pid=%u state=clear addr=0x%x size=0x%x",
+					owner_pid, address, size);
+			}
+		});
+
 		// Always flush MM if memory mapping is going to change.
 		rsx::mm_flush();
 

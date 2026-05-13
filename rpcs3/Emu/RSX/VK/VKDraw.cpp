@@ -3,10 +3,13 @@
 #include "../Program/GLSLCommon.h"
 #include "../rsx_methods.h"
 
+#include "Emu/multiproc_debug.h"
 #include "VKAsyncScheduler.h"
 #include "VKGSRender.h"
+#include "VKOverlayCapture.h"
 #include "vkutils/buffer_object.h"
 #include "vkutils/chip_class.h"
+#include "Emu/System.h"
 #include <vulkan/vulkan_core.h>
 
 namespace vk
@@ -1125,6 +1128,28 @@ void VKGSRender::begin()
 void VKGSRender::end()
 {
 	auto& regs = *m_ctx->register_state;
+	const u32 foreground_pid = Emu.GetForegroundPresentPid();
+
+	if (owner_pid != foreground_pid)
+	{
+		const bool overlay_capture_active = fxo::is_init<vk::vsh_overlay_state>() && fxo::get<vk::vsh_overlay_state>().overlay_active();
+		const bool unmap_guard_active = memory_unmap_in_progress.load();
+		const bool interrupt_active = external_interrupt_lock.load() != 0;
+
+		if (!overlay_capture_active || unmap_guard_active || interrupt_active)
+		{
+			MPDBG_LOG(rsx_log, "VK_DRAW_BRANCH: owner_pid=%u foreground_pid=%u branch=nop_non_foreground overlay_active=%d unmap_guard=%d external_interrupt=%d",
+				owner_pid, foreground_pid, overlay_capture_active, unmap_guard_active, interrupt_active);
+
+			execute_nop_draw();
+			rsx::thread::end();
+			return;
+		}
+
+		MPDBG_LOG(rsx_log, "VK_DRAW_BRANCH: owner_pid=%u foreground_pid=%u branch=overlay_capture_draw",
+			owner_pid, foreground_pid);
+	}
+
 	if (skip_current_frame || !m_graphics_state.test(rsx::rtt_config_valid) || swapchain_unavailable || cond_render_ctrl.disable_rendering())
 	{
 		execute_nop_draw();
@@ -1151,7 +1176,13 @@ void VKGSRender::end()
 		m_current_frame->flags &= ~frame_context_state::dirty;
 	}
 
-	analyse_current_rsx_pipeline();
+	if (!analyse_current_rsx_pipeline())
+	{
+		std::this_thread::yield();
+		execute_nop_draw();
+		rsx::thread::end();
+		return;
+	}
 
 	m_frame_stats.setup_time += m_profiler.duration();
 

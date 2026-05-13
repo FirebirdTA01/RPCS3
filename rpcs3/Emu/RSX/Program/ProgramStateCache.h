@@ -73,7 +73,13 @@ namespace program_hash_util
 
 		static fragment_program_metadata analyse_fragment_program(const void* ptr);
 
+		static bool analyse_fragment_program(const void* ptr, usz max_bytes, fragment_program_metadata& dst);
+
 		static usz get_fragment_program_ucode_hash(const RSXFragmentProgram &program);
+
+		static bool snapshot_fragment_program_ucode(const RSXFragmentProgram& src, RSXFragmentProgram& dst);
+
+		static bool snapshot_fragment_program_ucode(u32 guest_addr, u32 rsx_offset, RSXFragmentProgram& dst, fragment_program_metadata& metadata);
 	};
 
 	struct fragment_program_storage_hash
@@ -290,8 +296,7 @@ protected:
 
 		if (recompile)
 		{
-			it->first.clone_data();
-			backend_traits::recompile_fragment_program(rsx_fp, *new_shader, m_next_id++);
+			backend_traits::recompile_fragment_program(it->first, *new_shader, m_next_id++);
 		}
 
 		rsx::program_cache_hint_t::cache_fragment_program(cache_hint, rsx_fp, new_shader);
@@ -358,8 +363,22 @@ public:
 		Args&& ...args
 	)
 	{
+		RSXFragmentProgram fragment_shader_snapshot;
+		const RSXFragmentProgram* fragment_shader_for_cache = &fragment_shader;
+
+		if (!cache_hint || !cache_hint->has_fragment_program())
+		{
+			if (!program_hash_util::fragment_program_utils::snapshot_fragment_program_ucode(fragment_shader, fragment_shader_snapshot))
+			{
+				m_cache_miss_flag = true;
+				return { nullptr, nullptr, nullptr };
+			}
+
+			fragment_shader_for_cache = &fragment_shader_snapshot;
+		}
+
 		const auto& vp_search = search_vertex_program(cache_hint, vertex_shader);
-		const auto& fp_search = search_fragment_program(cache_hint, fragment_shader);
+		const auto& fp_search = search_fragment_program(cache_hint, *fragment_shader_for_cache);
 
 		const bool already_existing_fragment_program = std::get<1>(fp_search);
 		const bool already_existing_vertex_program = std::get<1>(vp_search);
@@ -402,7 +421,7 @@ public:
 
 		if (allow_notification)
 		{
-			callback = [this, vertex_shader, fragment_shader_ = RSXFragmentProgram::clone(fragment_shader), key]
+			callback = [this, vertex_shader, fragment_shader_ = RSXFragmentProgram::clone(*fragment_shader_for_cache), key]
 			(pipeline_storage_type& pipeline) -> pipeline_type*
 			{
 				if (!pipeline)

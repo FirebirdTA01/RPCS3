@@ -121,6 +121,7 @@ struct pad_info
 	atomic_t<u32> max_connect = 0;
 	std::array<u32, CELL_PAD_MAX_PORT_NUM> port_setting{ 0 };
 	std::array<pad_data_internal, CELL_PAD_MAX_PORT_NUM> reported_info{};
+	atomic_t<u32> pending_ps_press_mask = 0;
 
 	SAVESTATE_INIT_POS(11);
 
@@ -138,6 +139,33 @@ struct pad_info
 	bool is_reportedly_connected(u32 port_no) const
 	{
 		return port_no < get_max_connect() && !!(reported_info[port_no].port_status & CELL_PAD_STATUS_CONNECTED);
+	}
+
+	void queue_ps_press(u32 port_no)
+	{
+		if (port_no < CELL_PAD_MAX_PORT_NUM)
+		{
+			pending_ps_press_mask.fetch_op([mask = 1u << port_no](u32& value)
+			{
+				value |= mask;
+			});
+		}
+	}
+
+	bool consume_ps_press(u32 port_no)
+	{
+		if (port_no >= CELL_PAD_MAX_PORT_NUM)
+		{
+			return false;
+		}
+
+		const u32 mask = 1u << port_no;
+		return pending_ps_press_mask.fetch_op([mask](u32& value)
+		{
+			const bool has_press = !!(value & mask);
+			value &= ~mask;
+			return has_press;
+		}).second;
 	}
 };
 
