@@ -59,6 +59,7 @@ namespace vk
 		~vsh_overlay_state();
 
 		u64 latest_published_generation() const;
+		const vsh_overlay_slot* latest_ready_slot() const;
 		bool overlay_active() const;
 		void set_overlay_active(bool active);
 		u32 slot_index(const vsh_overlay_slot& slot) const;

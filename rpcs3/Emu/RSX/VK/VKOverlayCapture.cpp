@@ -17,6 +17,37 @@ namespace vk
 		return m_latest_published_generation.load();
 	}
 
+	const vsh_overlay_slot* vsh_overlay_state::latest_ready_slot() const
+	{
+		const u64 latest = m_latest_published_generation.load();
+		if (!latest)
+		{
+			return nullptr;
+		}
+
+		for (const auto& slot : m_slots)
+		{
+			if (slot.generation.load() != latest)
+			{
+				continue;
+			}
+
+			if (!slot.ready.load())
+			{
+				continue;
+			}
+
+			if (slot.state.load() != vsh_overlay_slot_state::published)
+			{
+				continue;
+			}
+
+			return &slot;
+		}
+
+		return nullptr;
+	}
+
 	bool vsh_overlay_state::overlay_active() const
 	{
 		return m_overlay_active.load();

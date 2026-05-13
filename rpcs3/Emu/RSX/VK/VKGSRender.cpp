@@ -2401,6 +2401,109 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 	m_queue_status.clear(flush_queue_state::flushing);
 }
 
+void VKGSRender::close_and_submit_swap_command_buffer(VkSemaphore overlay_wait_semaphore)
+{
+	ensure(overlay_wait_semaphore);
+	ensure(!m_queue_status.test_and_set(flush_queue_state::flushing));
+
+	rsx::mm_flush();
+
+	const bool sync_success = fxo::get<rsx::dma_manager>().sync();
+	const VkBool32 force_flush = !sync_success;
+
+	if (vk::test_status_interrupt(vk::heap_dirty))
+	{
+		if (m_attrib_ring_info.is_dirty() ||
+			m_fragment_env_ring_info.is_dirty() ||
+			m_vertex_env_ring_info.is_dirty() ||
+			m_fragment_texture_params_ring_info.is_dirty() ||
+			m_vertex_layout_ring_info.is_dirty() ||
+			m_fragment_constants_ring_info.is_dirty() ||
+			m_index_buffer_ring_info.is_dirty() ||
+			m_transform_constants_ring_info.is_dirty() ||
+			m_texture_upload_buffer_ring_info.is_dirty() ||
+			m_raster_env_ring_info.is_dirty() ||
+			m_instancing_buffer_ring_info.is_dirty())
+		{
+			auto secondary_command_buffer = m_secondary_cb_list.next();
+			secondary_command_buffer->begin();
+
+			m_attrib_ring_info.sync(*secondary_command_buffer);
+			m_fragment_env_ring_info.sync(*secondary_command_buffer);
+			m_vertex_env_ring_info.sync(*secondary_command_buffer);
+			m_fragment_texture_params_ring_info.sync(*secondary_command_buffer);
+			m_vertex_layout_ring_info.sync(*secondary_command_buffer);
+			m_fragment_constants_ring_info.sync(*secondary_command_buffer);
+			m_index_buffer_ring_info.sync(*secondary_command_buffer);
+			m_transform_constants_ring_info.sync(*secondary_command_buffer);
+			m_texture_upload_buffer_ring_info.sync(*secondary_command_buffer);
+			m_raster_env_ring_info.sync(*secondary_command_buffer);
+			m_instancing_buffer_ring_info.sync(*secondary_command_buffer);
+
+			secondary_command_buffer->end();
+
+			vk::queue_submit_t submit_info{ m_device->get_graphics_queue(), nullptr };
+			secondary_command_buffer->submit(submit_info, force_flush);
+		}
+
+		vk::clear_status_interrupt(vk::heap_dirty);
+	}
+
+	if (vk::is_renderpass_open(*m_current_command_buffer))
+	{
+		close_render_pass();
+	}
+
+	if (m_current_command_buffer->flags & vk::command_buffer::cb_has_open_query)
+	{
+		auto open_query = m_occlusion_map[m_active_query_info->driver_handle].indices.back();
+		m_occlusion_query_manager->end_query(*m_current_command_buffer, open_query);
+		m_current_command_buffer->flags &= ~vk::command_buffer::cb_has_open_query;
+	}
+
+	if (m_host_dma_ctrl && m_host_dma_ctrl->host_ctx()->needs_label_release())
+	{
+		vkCmdUpdateBuffer(*m_current_command_buffer,
+			m_host_object_data->value,
+			::offset32(&vk::host_data_t::commands_complete_event),
+			sizeof(u64),
+			const_cast<u64*>(&m_host_dma_ctrl->host_ctx()->last_label_acquire_event));
+
+		m_host_dma_ctrl->host_ctx()->on_label_release();
+	}
+
+	m_current_command_buffer->end();
+	m_current_command_buffer->tag();
+
+	vk::queue_submit_t primary_submit_info{ m_device->get_graphics_queue(), nullptr };
+	vk::queue_submit_t secondary_submit_info{};
+	primary_submit_info.wait_on(
+		m_current_frame->acquire_signal_semaphore,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
+	primary_submit_info.wait_on(overlay_wait_semaphore, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+	if (auto async_scheduler = g_fxo->try_get<vk::AsyncTaskScheduler>();
+		async_scheduler && async_scheduler->is_recording())
+	{
+		if (async_scheduler->is_host_mode())
+		{
+			const VkSemaphore async_sema = *async_scheduler->get_sema();
+			secondary_submit_info.queue_signal(async_sema);
+			primary_submit_info.wait_on(async_sema, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+			vk::get_resource_manager()->push_down_current_scope();
+		}
+
+		async_scheduler->flush(secondary_submit_info, force_flush);
+	}
+
+	primary_submit_info.queue_signal(m_current_frame->present_wait_semaphore);
+
+	m_current_command_buffer->submit(primary_submit_info, force_flush);
+
+	m_queue_status.clear(flush_queue_state::flushing);
+}
+
 void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 {
 	const bool clipped_scissor = (context == rsx::framebuffer_creation_context::context_draw);

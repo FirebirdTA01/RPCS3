@@ -188,6 +188,11 @@ namespace vk
 		void run(vk::command_buffer& cmd, vk::framebuffer* target, VkRect2D rect, u32 clearmask, color4f color, VkRenderPass render_pass);
 	};
 
+	struct vsh_overlay_composite_pass : public overlay_pass
+	{
+		vsh_overlay_composite_pass();
+	};
+
 	struct stencil_clear_pass : public overlay_pass
 	{
 		VkRect2D region = {};

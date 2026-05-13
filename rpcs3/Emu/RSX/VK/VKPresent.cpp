@@ -220,10 +220,18 @@ void VKGSRender::queue_swap_request()
 	}
 	else
 	{
-		close_and_submit_command_buffer(nullptr,
-			m_current_frame->acquire_signal_semaphore,
-			m_current_frame->present_wait_semaphore,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
+		if (m_vsh_overlay_wait_semaphore)
+		{
+			close_and_submit_swap_command_buffer(m_vsh_overlay_wait_semaphore);
+			m_vsh_overlay_wait_semaphore = VK_NULL_HANDLE;
+		}
+		else
+		{
+			close_and_submit_command_buffer(nullptr,
+				m_current_frame->acquire_signal_semaphore,
+				m_current_frame->present_wait_semaphore,
+				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
+		}
 	}
 
 	// Set up a present request for this frame as well
@@ -1020,7 +1028,17 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 		}
 	}
 
-	if (g_cfg.video.debug_overlay || has_overlay)
+	const vk::vsh_overlay_slot* vsh_overlay_slot = nullptr;
+	if (fxo::is_init<vk::vsh_overlay_state>())
+	{
+		const auto& overlay_state = fxo::get<vk::vsh_overlay_state>();
+		if (overlay_state.overlay_active())
+		{
+			vsh_overlay_slot = overlay_state.latest_ready_slot();
+		}
+	}
+
+	if (g_cfg.video.debug_overlay || has_overlay || vsh_overlay_slot)
 	{
 		if (target_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
 		{
@@ -1050,6 +1068,34 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 		}
 
 		direct_fbo->add_ref();
+
+		if (vsh_overlay_slot && vsh_overlay_slot->image && vsh_overlay_slot->ready_semaphore)
+		{
+			const auto& overlay_state = fxo::get<vk::vsh_overlay_state>();
+			const u64 generation = vsh_overlay_slot->generation.load();
+			const bool needs_wait = generation && generation != m_vsh_overlay_last_waited_generation;
+			m_vsh_overlay_wait_semaphore = needs_wait ? static_cast<VkSemaphore>(*vsh_overlay_slot->ready_semaphore) : VK_NULL_HANDLE;
+			if (needs_wait)
+			{
+				m_vsh_overlay_last_waited_generation = generation;
+			}
+
+			vsh_overlay_slot->image->push_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			std::vector<vk::image_view*> overlay_views =
+			{
+				vsh_overlay_slot->image->get_view(rsx::default_remap_vector.with_encoding(vk::VK_REMAP_IDENTITY))
+			};
+			vk::get_overlay_pass<vk::vsh_overlay_composite_pass>()->run(
+				*m_current_command_buffer,
+				areau(aspect_ratio),
+				direct_fbo,
+				overlay_views,
+				single_target_pass);
+			vsh_overlay_slot->image->pop_layout(*m_current_command_buffer);
+
+			MPDBG_LOG(rsx_log, "VK_OVERLAY_COMPOSITE: owner_pid=%u generation=%llu slot=%u wait_count=%u",
+				owner_pid, generation, overlay_state.slot_index(*vsh_overlay_slot), needs_wait ? 2u : 1u);
+		}
 
 		render_overlays(direct_fbo, areau(aspect_ratio));
 

@@ -194,6 +194,8 @@ private:
 	std::vector<vk::image*> m_fbo_images;
 
 	std::unique_ptr<vk::image> m_overlay_recording_img;
+	VkSemaphore m_vsh_overlay_wait_semaphore = VK_NULL_HANDLE;
+	u64 m_vsh_overlay_last_waited_generation = 0;
 
 	//Vertex layout
 	rsx::vertex_input_layout m_vertex_layout;
@@ -216,6 +218,7 @@ private:
 		VkSemaphore wait_semaphore = VK_NULL_HANDLE,
 		VkSemaphore signal_semaphore = VK_NULL_HANDLE,
 		VkPipelineStageFlags pipeline_stage_flags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+	void close_and_submit_swap_command_buffer(VkSemaphore overlay_wait_semaphore);
 
 	void flush_command_queue(bool hard_sync = false, bool do_not_switch = false);
 	void queue_swap_request();

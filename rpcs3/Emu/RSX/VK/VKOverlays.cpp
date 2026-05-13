@@ -809,6 +809,45 @@ namespace vk
 		overlay_pass::run(cmd, { 0, 0, target->width(), target->height() }, target, std::vector<vk::image_view*>{}, render_pass);
 	}
 
+	vsh_overlay_composite_pass::vsh_overlay_composite_pass()
+	{
+		vs_src =
+			"#version 420\n"
+			"#extension GL_ARB_separate_shader_objects : enable\n"
+			"layout(location=0) out vec2 tc0;\n"
+			"\n"
+			"void main()\n"
+			"{\n"
+			"	vec2 pos[4] = vec2[](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));\n"
+			"	vec2 tex[4] = vec2[](vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0));\n"
+			"	tc0 = tex[gl_VertexIndex & 3];\n"
+			"	gl_Position = vec4(pos[gl_VertexIndex & 3], 0.0, 1.0);\n"
+			"}\n";
+
+		fs_src =
+			"#version 420\n"
+			"#extension GL_ARB_separate_shader_objects : enable\n"
+			"layout(set=0, binding=0) uniform sampler2D fs0;\n"
+			"layout(location=0) in vec2 tc0;\n"
+			"layout(location=0) out vec4 out_color;\n"
+			"\n"
+			"void main()\n"
+			"{\n"
+			"	out_color = texture(fs0, tc0);\n"
+			"}\n";
+
+		m_num_usable_samplers = 1;
+		m_num_uniform_buffers = 0;
+
+		renderpass_config.set_attachment_count(1);
+		renderpass_config.set_color_mask(0, true, true, true, true);
+		renderpass_config.set_depth_mask(false);
+		renderpass_config.enable_blend(0,
+			VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA,
+			VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+			VK_BLEND_OP_ADD, VK_BLEND_OP_ADD);
+	}
+
 	stencil_clear_pass::stencil_clear_pass()
 	{
 		vs_src =
