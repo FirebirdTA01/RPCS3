@@ -855,6 +855,16 @@ namespace rsx
 			capture::capture_draw_memory(this);
 		}
 
+		if (owner_pid == 1)
+		{
+			const auto& draw_clause = m_ctx->register_state->current_draw_clause;
+			MPDBG_LOG(rsx_log, "RSX_DRAW_ACCOUNTED: owner_pid=%u command=%u primitive=%u frame_draw_calls=%u",
+				owner_pid,
+				static_cast<u32>(draw_clause.command),
+				static_cast<u32>(draw_clause.primitive),
+				m_frame_stats.draw_calls + 1);
+		}
+
 		in_begin_end = false;
 		m_frame_stats.draw_calls++;
 

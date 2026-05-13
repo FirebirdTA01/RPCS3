@@ -2425,6 +2425,27 @@ void ppu_thread::cpu_on_stop()
 {
 	if (current_function && is_stopped())
 	{
+		if (owner_pid == 1)
+		{
+			const auto expected_base = Emu.get_process_vm_base(owner_pid);
+			const bool vm_base_match = expected_base == memory_base_addr;
+			const auto& history = syscall_history;
+			const bool has_history = !history.data.empty() && history.index != 0;
+			const auto* last_hle = has_history ? &history.data[(history.index - 1) % history.data.size()] : nullptr;
+
+			MPDBG_LOG(ppu_log, "PPU_ABORT_TRACE: owner_pid=%u id=0x%x name=%s func=%s last_func=%s state=0x%x cia=0x%x lr=0x%llx gpr3=0x%llx current_error=0x%llx vm_base=%p expected_base=%p vm_base_match=%d last_hle=%s last_hle_cia=0x%llx last_hle_error=0x%llx last_hle_args=0x%llx,0x%llx,0x%llx,0x%llx",
+				owner_pid, id, get_name(), current_function ? current_function : "", last_function ? last_function : "",
+				+state.load(), cia, lr, gpr[3], gpr[3],
+				static_cast<void*>(memory_base_addr), static_cast<void*>(expected_base), vm_base_match ? 1 : 0,
+				last_hle && last_hle->func_name ? last_hle->func_name : "",
+				last_hle ? last_hle->cia : 0,
+				last_hle ? last_hle->error : 0,
+				last_hle ? last_hle->args[0] : 0,
+				last_hle ? last_hle->args[1] : 0,
+				last_hle ? last_hle->args[2] : 0,
+				last_hle ? last_hle->args[3] : 0);
+		}
+
 		if (start_time)
 		{
 			ppu_log.warning("'%s' aborted (%fs)", current_function, (get_guest_system_time() - start_time) / 1000000.);

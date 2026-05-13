@@ -4,6 +4,7 @@
 #include "Emu/multiproc_debug.h"
 #include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
+#include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Memory/vm_locking.h"
@@ -39,6 +40,21 @@ void fmt_class_string<sys_rsx_error>::format(std::string& out, u64 arg)
 static u64 rsx_timeStamp()
 {
 	return get_timebased_time();
+}
+
+static bool is_vsh_rsx_trace_cpu(const cpu_thread& cpu)
+{
+	return cpu.owner_pid == 1;
+}
+
+static ppu_thread* get_vsh_ppu_for_rsx_trace()
+{
+	if (auto ppu = cpu_thread::get_current<ppu_thread>(); ppu && ppu->owner_pid == 1)
+	{
+		return ppu;
+	}
+
+	return nullptr;
 }
 
 static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
@@ -207,6 +223,11 @@ error_code sys_rsx_memory_allocate(cpu_thread& cpu, vm::ptr<u32> mem_handle, vm:
 	cpu.state += cpu_flag::wait;
 
 	sys_rsx.warning("sys_rsx_memory_allocate(mem_handle=*0x%x, mem_addr=*0x%x, size=0x%x, flags=0x%llx, a5=0x%llx, a6=0x%llx, a7=0x%llx)", mem_handle, mem_addr, size, flags, a5, a6, a7);
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_MEMORY_ALLOCATE: owner_pid=%u id=0x%x name=%s mem_handle=0x%x mem_addr=0x%x size=0x%x flags=0x%llx a5=0x%llx a6=0x%llx a7=0x%llx active_pid=%u",
+			cpu.owner_pid, cpu.id, cpu.get_name(), mem_handle, mem_addr, size, flags, a5, a6, a7, Emu.current_process().pid());
+	}
 
 	if (vm::falloc(rsx::constants::local_mem_base, size, vm::video))
 	{
@@ -219,9 +240,19 @@ error_code sys_rsx_memory_allocate(cpu_thread& cpu, vm::ptr<u32> mem_handle, vm:
 
 		*mem_addr = rsx::constants::local_mem_base;
 		*mem_handle = 0x5a5a5a5b;
+		if (is_vsh_rsx_trace_cpu(cpu))
+		{
+			MPDBG_LOG(sys_rsx, "RSX_MEMORY_ALLOCATE_RET: owner_pid=%u id=0x%x name=%s ret=0x%x out_handle=0x%x out_addr=0x%llx",
+				cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_OK), *mem_handle, *mem_addr);
+		}
 		return CELL_OK;
 	}
 
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_MEMORY_ALLOCATE_RET: owner_pid=%u id=0x%x name=%s ret=0x%x",
+			cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_ENOMEM));
+	}
 	return CELL_ENOMEM;
 }
 
@@ -268,13 +299,30 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	sys_rsx.warning("sys_rsx_context_allocate(context_id=*0x%x, lpar_dma_control=*0x%x, lpar_driver_info=*0x%x, lpar_reports=*0x%x, mem_ctx=0x%llx, system_mode=0x%llx)",
 		context_id, lpar_dma_control, lpar_driver_info, lpar_reports, mem_ctx, system_mode);
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ALLOCATE: owner_pid=%u id=0x%x name=%s context_id=0x%x dma=0x%x driver=0x%x reports=0x%x mem_ctx=0x%llx system_mode=0x%llx active_pid=%u",
+			cpu.owner_pid, cpu.id, cpu.get_name(), context_id, lpar_dma_control, lpar_driver_info, lpar_reports, mem_ctx, system_mode, Emu.current_process().pid());
+	}
 
 	if (!vm::check_addr(rsx::constants::local_mem_base))
 	{
+		if (is_vsh_rsx_trace_cpu(cpu))
+		{
+			MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ALLOCATE_RET: owner_pid=%u id=0x%x name=%s ret=0x%x reason=no_local_mem",
+				cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_EINVAL));
+		}
 		return CELL_EINVAL;
 	}
 
 	const auto render = rsx::get_current_renderer();
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ALLOCATE_RENDER: owner_pid=%u id=0x%x name=%s render=%p render_pid=%u dma=0x%x driver=0x%x device=0x%x main_mem=0x%x local_mem=0x%x active_pid=%u",
+			cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<void*>(render), render ? render->owner_pid : 0,
+			render ? render->dma_address : 0, render ? render->driver_info : 0, render ? render->device_addr : 0,
+			render ? render->main_mem_size : 0, render ? render->local_mem_size : 0, Emu.current_process().pid());
+	}
 
 	std::lock_guard lock(render->sys_rsx_mtx);
 
@@ -289,6 +337,11 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	if (!dma_address)
 	{
+		if (is_vsh_rsx_trace_cpu(cpu))
+		{
+			MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ALLOCATE_RET: owner_pid=%u id=0x%x name=%s ret=0x%x reason=no_dma",
+				cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_ENOMEM));
+		}
 		return CELL_ENOMEM;
 	}
 
@@ -371,6 +424,13 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	*context_id = 0x55555555;
 
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ALLOCATE_RET: owner_pid=%u id=0x%x name=%s ret=0x%x out_context=0x%x out_dma=0x%llx out_driver=0x%llx out_reports=0x%llx render=%p render_pid=%u dma=0x%x driver=0x%x main_mem=0x%x local_mem=0x%x",
+			cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_OK), *context_id, *lpar_dma_control, *lpar_driver_info, *lpar_reports,
+			static_cast<void*>(render), render ? render->owner_pid : 0, render ? render->dma_address : 0,
+			render ? render->driver_info : 0, render ? render->main_mem_size : 0, render ? render->local_mem_size : 0);
+	}
 	return CELL_OK;
 }
 
@@ -442,10 +502,22 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u32 io, u32 ea
 	sys_rsx.warning("sys_rsx_context_iomap(context_id=0x%x, io=0x%x, ea=0x%x, size=0x%x, flags=0x%llx)", context_id, io, ea, size, flags);
 
 	const auto render = rsx::get_current_renderer();
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_CONTEXT_IOMAP: owner_pid=%u id=0x%x name=%s context_id=0x%x io=0x%x ea=0x%x size=0x%x flags=0x%llx render=%p render_pid=%u dma=0x%x driver=0x%x main_mem=0x%x active_pid=%u",
+			cpu.owner_pid, cpu.id, cpu.get_name(), context_id, io, ea, size, flags, static_cast<void*>(render),
+			render ? render->owner_pid : 0, render ? render->dma_address : 0, render ? render->driver_info : 0,
+			render ? render->main_mem_size : 0, Emu.current_process().pid());
+	}
 
 	if (!size || io & 0xFFFFF || ea + u64{size} > rsx::constants::local_mem_base || ea & 0xFFFFF || size & 0xFFFFF ||
 		context_id != 0x55555555 || render->main_mem_size < io + u64{size})
 	{
+		if (is_vsh_rsx_trace_cpu(cpu))
+		{
+			MPDBG_LOG(sys_rsx, "RSX_CONTEXT_IOMAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x context_id=0x%x io=0x%x ea=0x%x size=0x%x render_main_mem=0x%x",
+				cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_EINVAL), context_id, io, ea, size, render ? render->main_mem_size : 0);
+		}
 		return CELL_EINVAL;
 	}
 
@@ -463,12 +535,22 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u32 io, u32 ea
 	{
 		if (!vm::check_addr(addr, vm::page_readable | (addr < 0x20000000 ? 0 : vm::page_1m_size)))
 		{
+			if (is_vsh_rsx_trace_cpu(cpu))
+			{
+				MPDBG_LOG(sys_rsx, "RSX_CONTEXT_IOMAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x reason=bad_addr addr=0x%x",
+					cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_EINVAL), addr);
+			}
 			return CELL_EINVAL;
 		}
 
 		if ((addr == ea || !(addr % 0x1000'0000)) && idm::check_unlocked<sys_vm_t>(sys_vm_t::find_id(addr)))
 		{
 			// Virtual memory is disallowed
+			if (is_vsh_rsx_trace_cpu(cpu))
+			{
+				MPDBG_LOG(sys_rsx, "RSX_CONTEXT_IOMAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x reason=vm_addr addr=0x%x",
+					cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_EINVAL), addr);
+			}
 			return CELL_EINVAL;
 		}
 	}
@@ -495,6 +577,11 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u32 io, u32 ea
 		table.io[ea + i].release((io + i) << 20);
 	}
 
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_CONTEXT_IOMAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x context_id=0x%x io_page=0x%x ea_page=0x%x size_pages=0x%x",
+			cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_OK), context_id, io, ea, size);
+	}
 	return CELL_OK;
 }
 
@@ -562,14 +649,36 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	// todo: these event ports probly 'shouldnt' be here as i think its supposed to be interrupts that are sent from rsx somewhere in lv1
 
 	const auto render = rsx::get_current_renderer();
+	const auto trace_ppu = get_vsh_ppu_for_rsx_trace();
+	const auto trace_ret = [&](s32 ret, const char* reason)
+	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ATTRIBUTE_RET: owner_pid=%u id=0x%x name=%s context_id=0x%x package_id=0x%x ret=0x%x reason=%s render=%p render_pid=%u dma=0x%x driver=0x%x main_mem=0x%x local_mem=0x%x active_pid=%u",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), context_id, package_id, ret, reason,
+				static_cast<void*>(render), render ? render->owner_pid : 0, render ? render->dma_address : 0,
+				render ? render->driver_info : 0, render ? render->main_mem_size : 0, render ? render->local_mem_size : 0,
+				Emu.current_process().pid());
+		}
+	};
+	if (trace_ppu)
+	{
+		MPDBG_LOG(sys_rsx, "RSX_CONTEXT_ATTRIBUTE: owner_pid=%u id=0x%x name=%s context_id=0x%x package_id=0x%x a3=0x%llx a4=0x%llx a5=0x%llx a6=0x%llx render=%p render_pid=%u dma=0x%x driver=0x%x main_mem=0x%x local_mem=0x%x active_pid=%u",
+			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), context_id, package_id, a3, a4, a5, a6,
+			static_cast<void*>(render), render ? render->owner_pid : 0, render ? render->dma_address : 0,
+			render ? render->driver_info : 0, render ? render->main_mem_size : 0, render ? render->local_mem_size : 0,
+			Emu.current_process().pid());
+	}
 
 	if (!render->dma_address)
 	{
+		trace_ret(static_cast<s32>(CELL_EINVAL), "no_dma");
 		return { CELL_EINVAL, "dma_address is 0" };
 	}
 
 	if (context_id != 0x55555555)
 	{
+		trace_ret(static_cast<s32>(CELL_EINVAL), "bad_context");
 		return { CELL_EINVAL, "context_id is 0x%x", context_id };
 	}
 
@@ -643,6 +752,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 				cpu->state += cpu_flag::again;
 			}
 
+			trace_ret(static_cast<s32>(CELL_OK), "request_emu_flip_retry");
 			return {};
 		}
 		break;
@@ -672,6 +782,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		const u8 id = a3 & 0xFF;
 		if (id > 7)
 		{
+			trace_ret(static_cast<s32>(SYS_RSX_CONTEXT_ATTRIBUTE_ERROR), "bad_display_buffer");
 			return SYS_RSX_CONTEXT_ATTRIBUTE_ERROR;
 		}
 
@@ -722,6 +833,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	{
 		if (a3 > 7)
 		{
+			trace_ret(static_cast<s32>(SYS_RSX_CONTEXT_ATTRIBUTE_ERROR), "bad_flip_status_index");
 			return SYS_RSX_CONTEXT_ATTRIBUTE_ERROR;
 		}
 
@@ -768,6 +880,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		{
 			if (!size || !pitch)
 			{
+				trace_ret(static_cast<s32>(CELL_EINVAL), "tile_size_pitch");
 				return { CELL_EINVAL, "size or pitch are 0 (size=%d, pitch=%d)", size, pitch };
 			}
 
@@ -782,6 +895,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 			if (!range.valid() || range.end >= limit)
 			{
+				trace_ret(static_cast<s32>(CELL_EINVAL), "tile_range");
 				return { CELL_EINVAL, "range invalid (valid=%d, end=%d, limit=%d)", range.valid(), range.end, limit };
 			}
 
@@ -804,6 +918,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			{
 				if (render->iomap_table.ea[io] == umax)
 				{
+					trace_ret(static_cast<s32>(CELL_EINVAL), "tile_iomap_missing");
 					return { CELL_EINVAL, "iomap_table ea is umax" };
 				}
 			}
@@ -830,6 +945,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 		if (a3 >= std::size(render->zculls))
 		{
+			trace_ret(static_cast<s32>(SYS_RSX_CONTEXT_ATTRIBUTE_ERROR), "bad_zcull_index");
 			return SYS_RSX_CONTEXT_ATTRIBUTE_ERROR;
 		}
 
@@ -852,6 +968,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			// width and height are not allowed to be zero (checked by range.valid())
 			if (!cull_range.valid() || cull_range.end >= 3u << 20 || offset >= render->local_mem_size)
 			{
+				trace_ret(static_cast<s32>(CELL_EINVAL), "zcull_range");
 				return { CELL_EINVAL, "cull_range invalid (valid=%d, end=%d, offset=%d, local_mem_size=%d)", cull_range.valid(), cull_range.end, offset, render->local_mem_size };
 			}
 
@@ -918,6 +1035,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		if (cpu_thread::get_current<ppu_thread>())
 		{
 			// VBLANK/RSX thread only
+			trace_ret(static_cast<s32>(CELL_EINVAL), "vblank_wrong_thread");
 			return { CELL_EINVAL, "wrong thread" };
 		}
 
@@ -961,9 +1079,11 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	}
 
 	default:
+		trace_ret(static_cast<s32>(CELL_EINVAL), "unsupported");
 		return { CELL_EINVAL, "unsupported package id %d", package_id };
 	}
 
+	trace_ret(static_cast<s32>(CELL_OK), "ok");
 	return CELL_OK;
 }
 
@@ -978,6 +1098,11 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 	cpu.state += cpu_flag::wait;
 
 	sys_rsx.warning("sys_rsx_device_map(dev_addr=*0x%x, a2=*0x%x, dev_id=0x%x)", dev_addr, a2, dev_id);
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_DEVICE_MAP: owner_pid=%u id=0x%x name=%s dev_addr=0x%x a2=0x%x dev_id=0x%x active_pid=%u",
+			cpu.owner_pid, cpu.id, cpu.get_name(), dev_addr, a2, dev_id, Emu.current_process().pid());
+	}
 
 	if (dev_id != 8)
 	{
@@ -986,6 +1111,12 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 	}
 
 	const auto render = rsx::get_current_renderer();
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_DEVICE_MAP_RENDER: owner_pid=%u id=0x%x name=%s render=%p render_pid=%u device=0x%x dma=0x%x driver=0x%x active_pid=%u",
+			cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<void*>(render), render ? render->owner_pid : 0,
+			render ? render->device_addr : 0, render ? render->dma_address : 0, render ? render->driver_info : 0, Emu.current_process().pid());
+	}
 
 	std::scoped_lock lock(render->sys_rsx_mtx);
 
@@ -996,6 +1127,11 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 
 		if (!addr)
 		{
+			if (is_vsh_rsx_trace_cpu(cpu))
+			{
+				MPDBG_LOG(sys_rsx, "RSX_DEVICE_MAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x reason=no_addr",
+					cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_ENOMEM));
+			}
 			return CELL_ENOMEM;
 		}
 
@@ -1003,10 +1139,20 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 
 		*dev_addr = addr;
 		render->device_addr = addr;
+		if (is_vsh_rsx_trace_cpu(cpu))
+		{
+			MPDBG_LOG(sys_rsx, "RSX_DEVICE_MAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x out_addr=0x%llx render_device=0x%x",
+				cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_OK), *dev_addr, render ? render->device_addr : 0);
+		}
 		return CELL_OK;
 	}
 
 	*dev_addr = render->device_addr;
+	if (is_vsh_rsx_trace_cpu(cpu))
+	{
+		MPDBG_LOG(sys_rsx, "RSX_DEVICE_MAP_RET: owner_pid=%u id=0x%x name=%s ret=0x%x out_addr=0x%llx render_device=0x%x reused=1",
+			cpu.owner_pid, cpu.id, cpu.get_name(), static_cast<u32>(CELL_OK), *dev_addr, render ? render->device_addr : 0);
+	}
 	return CELL_OK;
 }
 

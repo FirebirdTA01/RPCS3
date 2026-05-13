@@ -1128,7 +1128,21 @@ void VKGSRender::begin()
 void VKGSRender::end()
 {
 	auto& regs = *m_ctx->register_state;
+	auto& draw_clause = regs.current_draw_clause;
 	const u32 foreground_pid = Emu.GetForegroundPresentPid();
+	const bool cond_render_disabled = cond_render_ctrl.disable_rendering();
+
+	if (owner_pid == 1)
+	{
+		MPDBG_LOG(rsx_log, "VK_DRAW_ENTRY: owner_pid=%u foreground_pid=%u command=%u primitive=%u skip=%d rtt_valid=%d swapchain_unavailable=%d cond_disabled=%d",
+			owner_pid, foreground_pid,
+			static_cast<u32>(draw_clause.command),
+			static_cast<u32>(draw_clause.primitive),
+			skip_current_frame ? 1 : 0,
+			m_graphics_state.test(rsx::rtt_config_valid) ? 1 : 0,
+			swapchain_unavailable ? 1 : 0,
+			cond_render_disabled ? 1 : 0);
+	}
 
 	if (owner_pid != foreground_pid)
 	{
@@ -1138,6 +1152,12 @@ void VKGSRender::end()
 
 		if (!overlay_capture_active || unmap_guard_active || interrupt_active)
 		{
+			if (owner_pid == 1)
+			{
+				MPDBG_LOG(rsx_log, "VK_DRAW_DROP: owner_pid=%u foreground_pid=%u reason=nop_non_foreground overlay_active=%d unmap_guard=%d external_interrupt=%d",
+					owner_pid, foreground_pid, overlay_capture_active ? 1 : 0, unmap_guard_active ? 1 : 0, interrupt_active ? 1 : 0);
+			}
+
 			MPDBG_LOG(rsx_log, "VK_DRAW_BRANCH: owner_pid=%u foreground_pid=%u branch=nop_non_foreground overlay_active=%d unmap_guard=%d external_interrupt=%d",
 				owner_pid, foreground_pid, overlay_capture_active, unmap_guard_active, interrupt_active);
 
@@ -1150,11 +1170,34 @@ void VKGSRender::end()
 			owner_pid, foreground_pid);
 	}
 
-	if (skip_current_frame || !m_graphics_state.test(rsx::rtt_config_valid) || swapchain_unavailable || cond_render_ctrl.disable_rendering())
+	if (skip_current_frame || !m_graphics_state.test(rsx::rtt_config_valid) || swapchain_unavailable || cond_render_disabled)
 	{
+		if (owner_pid == 1)
+		{
+			const char* reason = skip_current_frame ? "skip_current_frame" :
+				!m_graphics_state.test(rsx::rtt_config_valid) ? "invalid_rtt" :
+				swapchain_unavailable ? "swapchain_unavailable" :
+				"conditional_render_disabled";
+
+			MPDBG_LOG(rsx_log, "VK_DRAW_DROP: owner_pid=%u foreground_pid=%u reason=%s skip=%d rtt_valid=%d swapchain_unavailable=%d cond_disabled=%d",
+				owner_pid, foreground_pid, reason,
+				skip_current_frame ? 1 : 0,
+				m_graphics_state.test(rsx::rtt_config_valid) ? 1 : 0,
+				swapchain_unavailable ? 1 : 0,
+				cond_render_disabled ? 1 : 0);
+		}
+
 		execute_nop_draw();
 		rsx::thread::end();
 		return;
+	}
+
+	if (owner_pid == 1)
+	{
+		MPDBG_LOG(rsx_log, "VK_DRAW_EXECUTE: owner_pid=%u foreground_pid=%u command=%u primitive=%u",
+			owner_pid, foreground_pid,
+			static_cast<u32>(draw_clause.command),
+			static_cast<u32>(draw_clause.primitive));
 	}
 
 	m_profiler.start();

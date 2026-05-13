@@ -1118,6 +1118,17 @@ bool cpu_thread::check_state() noexcept
 
 			if (retval)
 			{
+				if (owner_pid == 1 && !(state1 & cpu_flag::exit))
+				{
+					MPDBG_LOG(sys_log, "CPU_STOP_TRIGGER: owner_pid=%u id=0x%x name=%s state0=0x%x state1=0x%x can_stop=%d pending=%d stop=%d again=%d req_exit=%d exit=%d",
+						owner_pid, id, thread_ctrl::get_name(), +state0, +state1, cpu_can_stop ? 1 : 0,
+						(state1 & cpu_flag::pending) ? 1 : 0,
+						(state1 & cpu_flag::stop) ? 1 : 0,
+						(state1 & cpu_flag::again) ? 1 : 0,
+						(state1 & cpu_flag::req_exit) ? 1 : 0,
+						(state1 & cpu_flag::exit) ? 1 : 0);
+				}
+
 				cpu_on_stop();
 			}
 

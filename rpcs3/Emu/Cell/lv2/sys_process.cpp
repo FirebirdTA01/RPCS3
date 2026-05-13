@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "sys_process.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
@@ -332,6 +333,11 @@ error_code sys_process_wait_for_child2(u64 unk1, u64 unk2, u64 unk3, u64 unk4, u
 error_code sys_process_get_status(u64 unk)
 {
 	sys_process.todo("sys_process_get_status(unk=0x%llx)", unk);
+	if (auto ppu = cpu_thread::get_current<ppu_thread>(); ppu && ppu->owner_pid == 1)
+	{
+		MPDBG_LOG(sys_process, "PROCESS_GET_STATUS: owner_pid=%u id=0x%x name=%s unk=0x%llx active_pid=%u ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), unk, Emu.current_process().pid(), static_cast<u32>(CELL_OK));
+	}
 	//vm::write32(CPU.gpr[4], GetPPUThreadStatus(CPU));
 	return CELL_OK;
 }

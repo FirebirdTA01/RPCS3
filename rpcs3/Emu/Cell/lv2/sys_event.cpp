@@ -8,11 +8,18 @@
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
+#include "Emu/multiproc_debug.h"
 #include "sys_process.h"
 
 #include "util/asm.hpp"
 
 LOG_CHANNEL(sys_event);
+
+static ppu_thread* get_vsh_ppu_for_event_trace(cpu_thread* cpu = cpu_thread::get_current())
+{
+	ppu_thread* ppu = cpu ? cpu->try_get<ppu_thread>() : nullptr;
+	return ppu && ppu->owner_pid == 1 ? ppu : nullptr;
+}
 
 lv2_event_queue::lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64 ipc_key) noexcept
 	: id(idm::last_id())
@@ -223,44 +230,74 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 error_code sys_event_queue_create(cpu_thread& cpu, vm::ptr<u32> equeue_id, vm::ptr<sys_event_queue_attribute_t> attr, u64 ipc_key, s32 size)
 {
 	cpu.state += cpu_flag::wait;
+	ppu_thread* trace_ppu = get_vsh_ppu_for_event_trace(&cpu);
 
 	sys_event.warning("sys_event_queue_create(equeue_id=*0x%x, attr=*0x%x, ipc_key=0x%llx, size=%d)", equeue_id, attr, ipc_key, size);
 
 	if (size <= 0 || size > 127)
 	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x ipc_key=0x%llx size=%d ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), ipc_key, size, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
 	const u32 protocol = attr->protocol;
+	const u32 type = attr->type;
+	const u64 name = attr->name_u64;
 
 	if (protocol != SYS_SYNC_FIFO && protocol != SYS_SYNC_PRIORITY)
 	{
 		sys_event.error("sys_event_queue_create(): unknown protocol (0x%x)", protocol);
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x ipc_key=0x%llx size=%d protocol=0x%x type=0x%x qname=0x%llx ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), ipc_key, size, protocol, type, name, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
-
-	const u32 type = attr->type;
 
 	if (type != SYS_PPU_QUEUE && type != SYS_SPU_QUEUE)
 	{
 		sys_event.error("sys_event_queue_create(): unknown type (0x%x)", type);
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x ipc_key=0x%llx size=%d protocol=0x%x type=0x%x qname=0x%llx ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), ipc_key, size, protocol, type, name, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
 	const u32 pshared = ipc_key == SYS_EVENT_QUEUE_LOCAL ? SYS_SYNC_NOT_PROCESS_SHARED : SYS_SYNC_PROCESS_SHARED;
 	constexpr u32 flags = SYS_SYNC_NEWLY_CREATED;
-	const u64 name = attr->name_u64;
 
 	if (const auto error = lv2_obj::create<lv2_event_queue>(pshared, ipc_key, flags, [&]()
 	{
 		return make_shared<lv2_event_queue>(protocol, type, size, name, ipc_key);
 	}))
 	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x ipc_key=0x%llx size=%d protocol=0x%x type=0x%x qname=0x%llx ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), ipc_key, size, protocol, type, name, static_cast<u32>(error));
+		}
+
 		return error;
 	}
 
 	cpu.check_state();
 	*equeue_id = idm::last_id();
+	if (trace_ppu)
+	{
+		MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x equeue_id=0x%x ipc_key=0x%llx size=%d protocol=0x%x type=0x%x qname=0x%llx ret=0x%x",
+			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), *equeue_id, ipc_key, size, protocol, type, name, static_cast<u32>(CELL_OK));
+	}
+
 	return CELL_OK;
 }
 
@@ -491,6 +528,12 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 		if (queue.events.empty())
 		{
+			if (ppu.owner_pid == 1)
+			{
+				MPDBG_LOG(sys_event, "EVENT_QUEUE_RECEIVE_WAIT: owner_pid=%u id=0x%x name=%s equeue_id=0x%x key=0x%llx qname=0x%llx timeout=0x%llx queued=0 waiters_ppu=%d waiters_spu=%d",
+					ppu.owner_pid, ppu.id, ppu.get_name(), equeue_id, queue.key, queue.name, timeout, !!queue.pq, !!queue.sq);
+			}
+
 			// Diagnostic: when a non-pid-1 thread is about to block on an event
 			// queue, log the queue key + owner + CIA + timeout. Helps identify
 			// cross-process IPC stalls where the producer is in a different
@@ -510,11 +553,23 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = queue.events.front();
 		queue.events.pop_front();
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_RECEIVE: owner_pid=%u id=0x%x name=%s equeue_id=0x%x key=0x%llx qname=0x%llx timeout=0x%llx ret=0x%x source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx queued=1",
+				ppu.owner_pid, ppu.id, ppu.get_name(), equeue_id, queue.key, queue.name, timeout, static_cast<u32>(CELL_OK), ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]);
+		}
+
 		return {};
 	});
 
 	if (!queue)
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_RECEIVE: owner_pid=%u id=0x%x name=%s equeue_id=0x%x timeout=0x%llx ret=0x%x missing=1",
+				ppu.owner_pid, ppu.id, ppu.get_name(), equeue_id, timeout, static_cast<u32>(CELL_ESRCH));
+		}
+
 		return CELL_ESRCH;
 	}
 
@@ -522,11 +577,23 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 	{
 		if (queue.ret != CELL_EBUSY)
 		{
+			if (ppu.owner_pid == 1)
+			{
+				MPDBG_LOG(sys_event, "EVENT_QUEUE_RECEIVE: owner_pid=%u id=0x%x name=%s equeue_id=0x%x key=0x%llx qname=0x%llx timeout=0x%llx ret=0x%x early=1",
+					ppu.owner_pid, ppu.id, ppu.get_name(), equeue_id, queue->key, queue->name, timeout, static_cast<u32>(queue.ret));
+			}
+
 			return queue.ret;
 		}
 	}
 	else
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_QUEUE_RECEIVE: owner_pid=%u id=0x%x name=%s equeue_id=0x%x key=0x%llx qname=0x%llx timeout=0x%llx ret=0x%x source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx queued=1",
+				ppu.owner_pid, ppu.id, ppu.get_name(), equeue_id, queue->key, queue->name, timeout, static_cast<u32>(CELL_OK), ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]);
+		}
+
 		return CELL_OK;
 	}
 
@@ -600,6 +667,12 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 		}
 	}
 
+	if (ppu.owner_pid == 1)
+	{
+		MPDBG_LOG(sys_event, "EVENT_QUEUE_RECEIVE: owner_pid=%u id=0x%x name=%s equeue_id=0x%x key=0x%llx qname=0x%llx timeout=0x%llx ret=0x%llx source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx waited=1",
+			ppu.owner_pid, ppu.id, ppu.get_name(), equeue_id, queue->key, queue->name, timeout, ppu.gpr[3], ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]);
+	}
+
 	return not_an_error(ppu.gpr[3]);
 }
 
@@ -627,12 +700,19 @@ error_code sys_event_queue_drain(ppu_thread& ppu, u32 equeue_id)
 error_code sys_event_port_create(cpu_thread& cpu, vm::ptr<u32> eport_id, s32 port_type, u64 name)
 {
 	cpu.state += cpu_flag::wait;
+	ppu_thread* trace_ppu = get_vsh_ppu_for_event_trace(&cpu);
 
 	sys_event.warning("sys_event_port_create(eport_id=*0x%x, port_type=%d, name=0x%llx)", eport_id, port_type, name);
 
 	if (port_type != SYS_EVENT_PORT_LOCAL && port_type != SYS_EVENT_PORT_IPC)
 	{
 		sys_event.error("sys_event_port_create(): unknown port type (%d)", port_type);
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x port_type=%d port_name=0x%llx ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), port_type, name, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
@@ -640,7 +720,19 @@ error_code sys_event_port_create(cpu_thread& cpu, vm::ptr<u32> eport_id, s32 por
 	{
 		cpu.check_state();
 		*eport_id = id;
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x eport_id=0x%x port_type=%d port_name=0x%llx ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), *eport_id, port_type, name, static_cast<u32>(CELL_OK));
+		}
+
 		return CELL_OK;
+	}
+
+	if (trace_ppu)
+	{
+		MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x port_type=%d port_name=0x%llx ret=0x%x",
+			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), port_type, name, static_cast<u32>(CELL_EAGAIN));
 	}
 
 	return CELL_EAGAIN;
@@ -678,6 +770,7 @@ error_code sys_event_port_destroy(ppu_thread& ppu, u32 eport_id)
 error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeue_id)
 {
 	cpu.state += cpu_flag::wait;
+	ppu_thread* trace_ppu = get_vsh_ppu_for_event_trace(&cpu);
 
 	sys_event.warning("sys_event_port_connect_local(eport_id=0x%x, equeue_id=0x%x)", eport_id, equeue_id);
 
@@ -688,20 +781,46 @@ error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeu
 
 	if (!port || !queue)
 	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_LOCAL: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ret=0x%x missing_port=%d missing_queue=%d",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id, equeue_id, static_cast<u32>(CELL_ESRCH), !port, !queue);
+		}
+
 		return CELL_ESRCH;
 	}
 
 	if (port->type != SYS_EVENT_PORT_LOCAL)
 	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_LOCAL: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x qname=0x%llx key=0x%llx port_type=%d ret=0x%x",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id, equeue_id, queue->name, queue->key, port->type, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
 	if (lv2_obj::check(port->queue))
 	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_LOCAL: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x qname=0x%llx key=0x%llx ret=0x%x already=1",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id, equeue_id, queue->name, queue->key, static_cast<u32>(CELL_EISCONN));
+		}
+
 		return CELL_EISCONN;
 	}
 
+	const u64 qname = queue->name;
+	const u64 qkey = queue->key;
 	port->queue = std::move(queue);
+
+	if (trace_ppu)
+	{
+		MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_LOCAL: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x qname=0x%llx key=0x%llx ret=0x%x",
+			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id, equeue_id, qname, qkey, static_cast<u32>(CELL_OK));
+	}
 
 	return CELL_OK;
 }
@@ -714,6 +833,12 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 
 	if (ipc_key == 0)
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x ipc_key=0x%llx ret=0x%x",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, ipc_key, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
@@ -725,20 +850,46 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 
 	if (!port || !queue)
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x ipc_key=0x%llx ret=0x%x missing_port=%d missing_queue=%d",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, ipc_key, static_cast<u32>(CELL_ESRCH), !port, !queue);
+		}
+
 		return CELL_ESRCH;
 	}
 
 	if (port->type != SYS_EVENT_PORT_IPC)
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx port_type=%d ret=0x%x",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, queue->id, ipc_key, queue->name, port->type, static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
 	if (lv2_obj::check(port->queue))
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx ret=0x%x already=1",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, queue->id, ipc_key, queue->name, static_cast<u32>(CELL_EISCONN));
+		}
+
 		return CELL_EISCONN;
 	}
 
+	const u32 qid = queue->id;
+	const u64 qname = queue->name;
 	port->queue = std::move(queue);
+
+	if (ppu.owner_pid == 1)
+	{
+		MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx ret=0x%x",
+			ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, qid, ipc_key, qname, static_cast<u32>(CELL_OK));
+	}
 
 	return CELL_OK;
 }
@@ -777,6 +928,7 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 {
 	const auto cpu = cpu_thread::get_current();
 	const auto ppu = cpu ? cpu->try_get<ppu_thread>() : nullptr;
+	const bool trace_vsh = ppu && ppu->owner_pid == 1;
 
 	if (cpu)
 	{
@@ -799,8 +951,19 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 		if (lv2_obj::check(port.queue))
 		{
 			const u64 source = port.name ? port.name : (u64{process_getpid() + 0u} << 32) | u64{eport_id};
+			if (trace_vsh)
+			{
+				MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x target_queue=0x%x qname=0x%llx qkey=0x%llx source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx queued_before=%zu wait_ppu=%d ret=pending",
+					ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, port.queue->id, port.queue->name, port.queue->key, source, data1, data2, data3, port.queue->events.size(), !!port.queue->pq);
+			}
 
 			return port.queue->send(source, data1, data2, data3, &notified_thread, ppu && port.queue->type == SYS_PPU_QUEUE ? &port : nullptr);
+		}
+
+		if (trace_vsh)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx ret=0x%x disconnected=1",
+				ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, data1, data2, data3, static_cast<u32>(CELL_ENOTCONN));
 		}
 
 		return CELL_ENOTCONN;
@@ -808,6 +971,12 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 
 	if (!port)
 	{
+		if (trace_vsh)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx ret=0x%x missing_port=1",
+				ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, data1, data2, data3, static_cast<u32>(CELL_ESRCH));
+		}
+
 		return CELL_ESRCH;
 	}
 
@@ -821,11 +990,23 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 		}
 
 		port->is_busy--;
+		if (trace_vsh)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx ret=0x%x notified_thread=1",
+				ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, data1, data2, data3, static_cast<u32>(CELL_OK));
+		}
+
 		return CELL_OK;
 	}
 
 	if (port.ret)
 	{
+		if (trace_vsh)
+		{
+			MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx ret=0x%x notified_thread=0",
+				ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, data1, data2, data3, static_cast<u32>(port.ret));
+		}
+
 		if (port.ret == CELL_EAGAIN)
 		{
 			// Not really an error code exposed to games (thread has raised cpu_flag::again)
@@ -838,6 +1019,12 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 		}
 
 		return port.ret;
+	}
+
+	if (trace_vsh)
+	{
+		MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx ret=0x%x notified_thread=0",
+			ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, data1, data2, data3, static_cast<u32>(CELL_OK));
 	}
 
 	return CELL_OK;

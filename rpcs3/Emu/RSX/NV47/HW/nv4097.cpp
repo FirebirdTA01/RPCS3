@@ -2,6 +2,7 @@
 #include "nv4097.h"
 #include "nv47_sync.hpp"
 
+#include "Emu/multiproc_debug.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/RSX/Common/BufferUtils.h"
 
@@ -462,6 +463,15 @@ namespace rsx
 			if (!REGS(ctx)->current_draw_clause.empty())
 			{
 				REGS(ctx)->current_draw_clause.compile();
+
+				if (RSX(ctx)->owner_pid == 1)
+				{
+					MPDBG_LOG(rsx_log, "RSX_FIFO_DRAW_CLAUSE: owner_pid=%u command=%u primitive=%u immediate=%d",
+						RSX(ctx)->owner_pid,
+						static_cast<u32>(REGS(ctx)->current_draw_clause.command),
+						static_cast<u32>(REGS(ctx)->current_draw_clause.primitive),
+						REGS(ctx)->current_draw_clause.is_immediate_draw ? 1 : 0);
+				}
 
 				if (g_cfg.video.disable_video_output)
 				{

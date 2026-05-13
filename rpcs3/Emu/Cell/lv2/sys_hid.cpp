@@ -6,10 +6,17 @@
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/Modules/cellPad.h"
+#include "Emu/multiproc_debug.h"
 
 #include "sys_process.h"
 
 LOG_CHANNEL(sys_hid);
+
+static ppu_thread* get_vsh_ppu_for_hid_trace()
+{
+	ppu_thread* ppu = cpu_thread::get_current<ppu_thread>();
+	return ppu && ppu->owner_pid == 1 ? ppu : nullptr;
+}
 
 error_code sys_hid_manager_open(ppu_thread& ppu, u64 device_type, u64 port_no, vm::ptr<u32> handle)
 {
@@ -18,11 +25,23 @@ error_code sys_hid_manager_open(ppu_thread& ppu, u64 device_type, u64 port_no, v
 	//device type == 1 = pad, 2 = kb, 3 = mouse
 	if (device_type > 3)
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_hid, "HID_MANAGER_OPEN: owner_pid=%u id=0x%x name=%s device_type=0x%llx port_no=0x%llx handle=0x%x ret=0x%x out_handle=0x0",
+				ppu.owner_pid, ppu.id, ppu.get_name(), device_type, port_no, handle.addr(), static_cast<u32>(CELL_EINVAL));
+		}
+
 		return CELL_EINVAL;
 	}
 
 	if (!handle)
 	{
+		if (ppu.owner_pid == 1)
+		{
+			MPDBG_LOG(sys_hid, "HID_MANAGER_OPEN: owner_pid=%u id=0x%x name=%s device_type=0x%llx port_no=0x%llx handle=0x%x ret=0x%x out_handle=0x0",
+				ppu.owner_pid, ppu.id, ppu.get_name(), device_type, port_no, handle.addr(), static_cast<u32>(CELL_EFAULT));
+		}
+
 		return CELL_EFAULT;
 	}
 
@@ -35,6 +54,12 @@ error_code sys_hid_manager_open(ppu_thread& ppu, u64 device_type, u64 port_no, v
 	{
 		cellPadInit(ppu, 7);
 		cellPadSetPortSetting(::narrow<u32>(port_no) /* 0 */, CELL_PAD_SETTING_LDD | CELL_PAD_SETTING_PRESS_ON | CELL_PAD_SETTING_SENSOR_ON);
+	}
+
+	if (ppu.owner_pid == 1)
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_OPEN: owner_pid=%u id=0x%x name=%s device_type=0x%llx port_no=0x%llx handle=0x%x ret=0x%x out_handle=0x%x",
+			ppu.owner_pid, ppu.id, ppu.get_name(), device_type, port_no, handle.addr(), static_cast<u32>(CELL_OK), *handle);
 	}
 
 	return CELL_OK;
@@ -93,10 +118,22 @@ error_code sys_hid_manager_ioctl(u32 hid_handle, u32 pkg_id, vm::ptr<void> buf, 
 	{
 		if (!buf || buf_size < 1)
 		{
+			if (const auto ppu = get_vsh_ppu_for_hid_trace())
+			{
+				MPDBG_LOG(sys_hid, "HID_MANAGER_IOCTL: owner_pid=%u id=0x%x name=%s handle=0x%x pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%x",
+					ppu->owner_pid, ppu->id, ppu->get_name(), hid_handle, pkg_id, buf.addr(), buf_size, static_cast<u32>(CELL_EFAULT));
+			}
+
 			return CELL_EFAULT;
 		}
 
 		*vm::static_ptr_cast<u8>(buf) = 0xee;
+	}
+
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_IOCTL: owner_pid=%u id=0x%x name=%s handle=0x%x pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), hid_handle, pkg_id, buf.addr(), buf_size, static_cast<u32>(CELL_OK));
 	}
 
 	return CELL_OK;
@@ -106,12 +143,24 @@ error_code sys_hid_manager_check_focus()
 {
 	// spammy sys_hid.todo("sys_hid_manager_check_focus()");
 
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_CHECK_FOCUS: owner_pid=%u id=0x%x name=%s ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), 1);
+	}
+
 	return not_an_error(1);
 }
 
 error_code sys_hid_manager_513(u64 a1, u64 a2, vm::ptr<void> buf, u64 buf_size)
 {
 	sys_hid.todo("sys_hid_manager_513(%llx, %llx, buf=%llx, buf_size=%llx)", a1, a2, buf, buf_size);
+
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_513: owner_pid=%u id=0x%x name=%s a1=0x%llx a2=0x%llx buf=0x%x buf_size=0x%llx ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), a1, a2, buf.addr(), buf_size, static_cast<u32>(CELL_OK));
+	}
 
 	return CELL_OK;
 }
@@ -143,6 +192,12 @@ error_code sys_hid_manager_514(u32 pkg_id, vm::ptr<void> buf, u64 buf_size)
 		sys_hid.todo("unk1: 0x%x, unk2:0x%x", inf->unk1, inf->unk2);
 	}
 
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_514: owner_pid=%u id=0x%x name=%s pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), pkg_id, buf.addr(), buf_size, static_cast<u32>(CELL_OK));
+	}
+
 	return CELL_OK;
 }
 
@@ -150,12 +205,26 @@ error_code sys_hid_manager_is_process_permission_root(u32 pid)
 {
 	sys_hid.todo("sys_hid_manager_is_process_permission_root(pid=0x%x)", pid);
 
-	return not_an_error(g_ps3_process_info.has_root_perm());
+	const u32 ret = g_ps3_process_info.has_root_perm();
+
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_IS_PROCESS_PERMISSION_ROOT: owner_pid=%u id=0x%x name=%s pid=0x%x ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), pid, ret);
+	}
+
+	return not_an_error(ret);
 }
 
 error_code sys_hid_manager_add_hot_key_observer(u32 event_queue, vm::ptr<u32> unk)
 {
 	sys_hid.todo("sys_hid_manager_add_hot_key_observer(event_queue=0x%x, unk=*0x%x)", event_queue, unk);
+
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_ADD_HOT_KEY_OBSERVER: owner_pid=%u id=0x%x name=%s event_queue=0x%x unk=0x%x ret=0x%x",
+			ppu->owner_pid, ppu->id, ppu->get_name(), event_queue, unk.addr(), static_cast<u32>(CELL_OK));
+	}
 
 	return CELL_OK;
 }
@@ -164,6 +233,12 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 {
 	if (!buf)
 	{
+		if (const auto ppu = get_vsh_ppu_for_hid_trace())
+		{
+			MPDBG_LOG(sys_hid, "HID_MANAGER_READ: owner_pid=%u id=0x%x name=%s handle=0x%x pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%x",
+				ppu->owner_pid, ppu->id, ppu->get_name(), handle, pkg_id, buf.addr(), buf_size, static_cast<u32>(CELL_EFAULT));
+		}
+
 		return CELL_EFAULT;
 	}
 
@@ -181,6 +256,16 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 		{
 			u64 cpySize = std::min(static_cast<u64>(tmpData->len) * sizeof(u16), buf_size * sizeof(u16));
 			memcpy(buf.get_ptr(), &tmpData->button, cpySize);
+
+			if (const auto ppu = get_vsh_ppu_for_hid_trace())
+			{
+				const u16 d1 = tmpData->button[CELL_PAD_BTN_OFFSET_DIGITAL1];
+				const u16 d2 = tmpData->button[CELL_PAD_BTN_OFFSET_DIGITAL2];
+				MPDBG_LOG(sys_hid, "HID_MANAGER_READ: owner_pid=%u id=0x%x name=%s handle=0x%x pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%llx pad_len=%u d1=0x%x d2=0x%x ps=%d",
+					ppu->owner_pid, ppu->id, ppu->get_name(), handle, pkg_id, buf.addr(), buf_size, cpySize, tmpData->len,
+					d1, d2, !!(d1 & CELL_PAD_CTRL_PS));
+			}
+
 			return not_an_error(cpySize);
 		}
 	}
@@ -192,8 +277,24 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 		{
 			u64 cpySize = std::min(static_cast<u64>(tmpData->len) * sizeof(u16), buf_size * sizeof(u16));
 			memcpy(buf.get_ptr(), &tmpData->button, cpySize);
+
+			if (const auto ppu = get_vsh_ppu_for_hid_trace())
+			{
+				const u16 d1 = tmpData->button[CELL_PAD_BTN_OFFSET_DIGITAL1];
+				const u16 d2 = tmpData->button[CELL_PAD_BTN_OFFSET_DIGITAL2];
+				MPDBG_LOG(sys_hid, "HID_MANAGER_READ: owner_pid=%u id=0x%x name=%s handle=0x%x pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%llx pad_len=%u d1=0x%x d2=0x%x ps=%d",
+					ppu->owner_pid, ppu->id, ppu->get_name(), handle, pkg_id, buf.addr(), buf_size, cpySize / 2, tmpData->len,
+					d1, d2, !!(d1 & CELL_PAD_CTRL_PS));
+			}
+
 			return not_an_error(cpySize / 2);
 		}
+	}
+
+	if (const auto ppu = get_vsh_ppu_for_hid_trace())
+	{
+		MPDBG_LOG(sys_hid, "HID_MANAGER_READ: owner_pid=%u id=0x%x name=%s handle=0x%x pkg_id=0x%x buf=0x%x buf_size=0x%llx ret=0x%x pad_len=0",
+			ppu->owner_pid, ppu->id, ppu->get_name(), handle, pkg_id, buf.addr(), buf_size, static_cast<u32>(CELL_OK));
 	}
 
 	return CELL_OK;
