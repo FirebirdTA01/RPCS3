@@ -735,7 +735,11 @@ void pad_thread::operator()()
 					bool queued_vsh_ps = false;
 					if (auto* vsh_pad = Emu.process_by_pid(1).local_fxo().try_get<pad_info>())
 					{
+						const u32 pending_before = +vsh_pad->pending_ps_press_mask;
 						vsh_pad->queue_ps_press(0);
+						const u32 pending_after = +vsh_pad->pending_ps_press_mask;
+						MPDBG_LOG(sys_log, "CELL_PAD_QUEUE_PS_PRESS: owner_pid=1 port=0 pending_before=0x%x pending_after=0x%x active_pid=%u input_pid=%u",
+							pending_before, pending_after, Emu.current_process().pid(), Emu.GetInputForegroundPid());
 						queued_vsh_ps = true;
 					}
 
@@ -744,6 +748,17 @@ void pad_thread::operator()()
 					lv2_obj::clear_scheduler_pending_for_pid(1);
 					MPDBG_LOG(sys_log, "PAD_NATIVE_OVERLAY_ACTIVATED: input_pid=%u queued_vsh_ps=%d signaled_vsh_pad=%d",
 						Emu.GetInputForegroundPid(), queued_vsh_ps, signaled_vsh_pad ? 1 : 0);
+				}
+			}
+
+			if (ps_button_pressed)
+			{
+				if (auto* vsh_pad = Emu.process_by_pid(1).local_fxo().try_get<pad_info>())
+				{
+					const u64 hold_until = get_system_time() + 50'000;
+					vsh_pad->hold_ps_press_until(0, hold_until);
+					MPDBG_LOG(sys_log, "CELL_PAD_HOLD_PS_PRESS: owner_pid=1 port=0 hold_until=%llu active_pid=%u input_pid=%u",
+						hold_until, Emu.current_process().pid(), Emu.GetInputForegroundPid());
 				}
 			}
 

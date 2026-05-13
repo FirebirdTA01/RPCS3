@@ -122,6 +122,7 @@ struct pad_info
 	std::array<u32, CELL_PAD_MAX_PORT_NUM> port_setting{ 0 };
 	std::array<pad_data_internal, CELL_PAD_MAX_PORT_NUM> reported_info{};
 	atomic_t<u32> pending_ps_press_mask = 0;
+	std::array<atomic_t<u64>, CELL_PAD_MAX_PORT_NUM> ps_press_hold_until_us{};
 
 	SAVESTATE_INIT_POS(11);
 
@@ -149,6 +150,14 @@ struct pad_info
 			{
 				value |= mask;
 			});
+		}
+	}
+
+	void hold_ps_press_until(u32 port_no, u64 hold_until_us)
+	{
+		if (port_no < CELL_PAD_MAX_PORT_NUM)
+		{
+			ps_press_hold_until_us[port_no] = hold_until_us;
 		}
 	}
 

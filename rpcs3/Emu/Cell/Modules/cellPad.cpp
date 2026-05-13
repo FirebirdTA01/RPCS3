@@ -3,6 +3,7 @@
 #include "Emu/IdManager.h"
 #include "Emu/multiproc_debug.h"
 #include "Emu/system_config.h"
+#include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_process.h"
 #include "Emu/Io/pad_types.h"
@@ -580,10 +581,23 @@ void pad_get_data(u32 port_no, CellPadData* data, bool get_periph_data = false)
 		}
 	}
 
-	if (config.consume_ps_press(port_no))
+	const bool consumed_ps_press = config.consume_ps_press(port_no);
+	const u64 ps_hold_until = +config.ps_press_hold_until_us[port_no];
+	const u64 ps_hold_now = ps_hold_until ? get_system_time() : 0;
+	const bool held_ps_press = ps_hold_until && ps_hold_now < ps_hold_until;
+	if (consumed_ps_press || held_ps_press)
 	{
 		output.button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= CELL_PAD_CTRL_PS;
 		btnChanged = true;
+	}
+
+	if (caller_pid == 1 && (consumed_ps_press || held_ps_press))
+	{
+		MPDBG_LOG(cellPad, "CELL_PAD_PS_CONSUME: owner_pid=%u port=%u foreground_pid=%u setting=0x%x consumed=%d held=%d hold_until=%llu now=%llu d1=0x%x d2=0x%x",
+			caller_pid, port_no, Emu.GetInputForegroundPid(), setting, consumed_ps_press ? 1 : 0, held_ps_press ? 1 : 0,
+			ps_hold_until, ps_hold_now,
+			static_cast<u16>(output.button[CELL_PAD_BTN_OFFSET_DIGITAL1]),
+			static_cast<u16>(output.button[CELL_PAD_BTN_OFFSET_DIGITAL2]));
 	}
 
 	if (setting & CELL_PAD_SETTING_SENSOR_ON)
