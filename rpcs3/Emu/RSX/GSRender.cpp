@@ -51,12 +51,16 @@ void GSRender::on_exit()
 	}
 }
 
-void GSRender::flip(const rsx::display_flip_info_t&)
+void GSRender::flip(const rsx::display_flip_info_t& info)
 {
-	if (m_frame)
+	Emu.TryConsumeVshNativeOverlayPresentRequest(owner_pid);
+
+	if (m_frame && owner_pid == Emu.GetForegroundPresentPid())
 	{
 		m_frame->flip(m_context);
 	}
+
+	rsx::thread::flip(info);
 }
 
 f64 GSRender::get_display_refresh_rate() const

@@ -1954,6 +1954,32 @@ void lv2_obj::cleanup()
 	s_yield_frequency = 0;
 }
 
+void lv2_obj::clear_scheduler_pending_for_pid(u32 owner_pid)
+{
+	std::lock_guard lock(g_mutex);
+
+	const u32 index = pending_pid_index(owner_pid);
+	const u32 pending = g_pending_per_pid[index];
+
+	if (!pending)
+	{
+		return;
+	}
+
+	g_pending_per_pid[index] = 0;
+	g_pending = pending < g_pending ? g_pending - pending : 0;
+
+	for (auto target = +g_ppu; target; target = target->next_ppu)
+	{
+		if (target->owner_pid == owner_pid)
+		{
+			target->ack_suspend = false;
+		}
+	}
+
+	schedule_all();
+}
+
 void lv2_obj::schedule_all(u64 current_time)
 {
 	auto it = std::find(g_to_notify, std::end(g_to_notify), std::add_pointer_t<const void>{});

@@ -5065,6 +5065,7 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
 
 	m_active_process_index = idx;
 	m_input_foreground_pid = pid;
+	m_foreground_present_pid = pid;
 
 	if (auto* in_rsx = m_processes[idx].local_fxo().try_get<rsx::thread>())
 	{

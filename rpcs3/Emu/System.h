@@ -136,6 +136,17 @@ class Emulator final
 	// pieces add independent updates for PS-button-driven VSH XMB routing.
 	atomic_t<u32> m_input_foreground_pid{1};
 
+	// Present-foreground process pid. Currently mirrored by set_active_process;
+	// kept separate from input foreground so a future compositor can layer
+	// presentation independently from controller ownership.
+	atomic_t<u32> m_foreground_present_pid{1};
+
+	// Latched from VSH before a co-resident game applies its own config.
+	// Game-specific configs may reset g_cfg.misc.use_vsh_native_overlay, but
+	// the PS-button routing choice belongs to the VSH-rooted session.
+	atomic_t<bool> m_use_vsh_native_overlay{false};
+	atomic_t<bool> m_vsh_native_overlay_present_pending{false};
+
 	// VM swap mutex — held by set_active_process during pointer switch.
 	// TODO: this is currently dead code. The original intent was that
 	// system threads reading guest memory would take a shared_lock and
@@ -268,6 +279,18 @@ public:
 	void set_active_process(u32 pid, bool suspend_outgoing = true);
 	u32 GetInputForegroundPid() const { return m_input_foreground_pid; }
 	void SetInputForegroundPid(u32 pid) { m_input_foreground_pid = pid; }
+	u32 GetForegroundPresentPid() const { return m_foreground_present_pid; }
+	void SetForegroundPresentPid(u32 pid) { m_foreground_present_pid = pid; }
+	bool UseVshNativeOverlay() const { return m_use_vsh_native_overlay; }
+	void SetUseVshNativeOverlay(bool enabled) { m_use_vsh_native_overlay = enabled; }
+	void RequestVshNativeOverlayPresent() { m_vsh_native_overlay_present_pending = true; }
+	void TryConsumeVshNativeOverlayPresentRequest(u32 owner_pid)
+	{
+		if (owner_pid == 1 && m_vsh_native_overlay_present_pending.exchange(false))
+		{
+			m_foreground_present_pid = 1;
+		}
+	}
 	void suspend_process(u32 pid);
 	void resume_process(u32 pid);
 	void destroy_process(u32 pid);

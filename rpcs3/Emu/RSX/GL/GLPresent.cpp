@@ -6,6 +6,7 @@
 #include "upscalers/nearest_pass.hpp"
 
 #include "Emu/Cell/Modules/cellVideoOut.h"
+#include "Emu/System.h"
 #include "Emu/RSX/Overlays/overlay_manager.h"
 #include "Emu/RSX/Overlays/overlay_debug_overlay.h"
 
@@ -161,9 +162,16 @@ gl::texture* GLGSRender::get_present_source(gl::present_surface_info* info, cons
 
 void GLGSRender::flip(const rsx::display_flip_info_t& info)
 {
-	if (info.skip_frame)
+	Emu.TryConsumeVshNativeOverlayPresentRequest(owner_pid);
+	const bool foreground_present = owner_pid == Emu.GetForegroundPresentPid();
+
+	if (info.skip_frame || !foreground_present)
 	{
-		m_frame->flip(m_context, true);
+		if (foreground_present)
+		{
+			m_frame->flip(m_context, true);
+		}
+
 		rsx::thread::flip(info);
 		return;
 	}

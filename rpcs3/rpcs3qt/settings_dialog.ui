@@ -3036,6 +3036,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="useVshNativeOverlay">
+                 <property name="text">
+                  <string>Use VSH native overlay when available</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="useRecursiveScan">
                  <property name="text">
                   <string>Use recursive scan</string>

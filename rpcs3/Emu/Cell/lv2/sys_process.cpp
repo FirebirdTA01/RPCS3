@@ -2,6 +2,7 @@
 #include "sys_process.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "Emu/VFS.h"
 #include "Emu/vfs_config.h"
 #include "Emu/IdManager.h"
@@ -477,7 +478,9 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 					hdd1 = std::move(hdd1), klic, argv = std::move(argv), envp = std::move(envp),
 					data = std::move(data)]() mutable
 				{
+					const bool use_vsh_native_overlay = static_cast<bool>(g_cfg.misc.use_vsh_native_overlay);
 					Emu.set_active_process(game_pid, /*suspend_outgoing=*/false); // Co-resident: keep VSH alive while game runs
+					Emu.SetUseVshNativeOverlay(use_vsh_native_overlay);
 
 					Emu.current_process().RefArgv() = std::move(argv);
 					Emu.current_process().RefEnvp() = std::move(envp);
@@ -609,6 +612,15 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 		Emu.SetContinuousMode(true);
 		Emu.Kill(false);
 	});
+
+	if (is_from_vsh && !is_real_reboot)
+	{
+		// Co-resident VSH launches keep the caller process alive. Do not enter
+		// the destructive exitspawn wait path, which waits for VSH's caller PPU
+		// to be stopped and leaves PAF locks held forever.
+		ppu.check_state();
+		return;
+	}
 
 	// Wait for GUI thread
 	while (auto state = +ppu.state)

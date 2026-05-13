@@ -287,6 +287,8 @@ public:
 
 	static void make_scheduler_ready();
 
+	static void clear_scheduler_pending_for_pid(u32 owner_pid);
+
 	static std::pair<ppu_thread_status, u32> ppu_state(ppu_thread* ppu, bool lock_idm = true, bool lock_lv2 = true);
 
 	static inline void append(cpu_thread* const thread)

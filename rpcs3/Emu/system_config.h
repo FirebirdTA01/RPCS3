@@ -372,6 +372,7 @@ struct cfg_root : cfg::node
 		cfg::_bool show_fatal_error_hints{ this, "Show fatal error hints", false, true };
 		cfg::_bool show_capture_hints{ this, "Show capture hints", true, true };
 		cfg::_bool use_native_interface{ this, "Use native user interface", true };
+		cfg::_bool use_vsh_native_overlay{ this, "Use VSH native overlay", false, true };
 		cfg::_bool use_recursive_scan{this, "Use recursive scan", false};
 		cfg::string gdb_server{ this, "GDB Server", "127.0.0.1:2345" };
 		cfg::_bool silence_all_logs{ this, "Silence All Logs", false, true };
