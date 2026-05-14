@@ -2,6 +2,8 @@
 #include "stdafx.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/Modules/sceNp.h" // for SCE_NP_PORT
+#include "Emu/System.h"
+#include "Emu/Memory/vm.h"
 
 #include "network_context.h"
 #include "sys_net_helpers.h"
@@ -198,6 +200,25 @@ void network_thread::operator()()
 			continue;
 		}
 
+		// Serialize against set_active_process's VM-globals swap. Without this,
+		// the socklist (populated under the previous tick's local_fxo) can hold
+		// shared_ptrs to lv2_socket objects whose owning process state changed
+		// underneath. set_active_process takes m_vm_swap_mutex exclusively; we
+		// hold it shared across the whole tick — poll() + handle_events + the
+		// idm::select rebuild — so the swap cannot interleave.
+		std::shared_lock vm_lock(Emu.vm_swap_mutex());
+		const u32 old_host_owner_pid = id_manager::g_host_thread_owner_pid;
+		bool vsh_vm_context = false;
+
+		if (Emu.IsVshCoResident())
+		{
+			id_manager::g_host_thread_owner_pid = 1;
+
+			auto& handle = Emu.process_by_pid(1).vm_handle();
+			vm::enter_thread_vm_context(handle, handle.base_addr, handle.sudo_addr, handle.reservations);
+			vsh_vm_context = true;
+		}
+
 		ensure(socklist.size() <= lv2_socket::id_count);
 
 		// Wait with 1ms timeout
@@ -245,9 +266,15 @@ void network_thread::operator()()
 			was_connecting[i] = cur_connecting;
 			connecting[i] = cur_connecting;
 #endif
+			}
+
+			if (vsh_vm_context)
+			{
+				vm::leave_thread_vm_context();
+				id_manager::g_host_thread_owner_pid = old_host_owner_pid;
+			}
 		}
 	}
-}
 
 // Must be used under list_p2p_ports_mutex lock!
 void p2p_thread::create_p2p_port(u16 p2p_port)

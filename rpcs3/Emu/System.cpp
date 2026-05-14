@@ -27,6 +27,8 @@
 #include "Emu/Cell/lv2/sys_prx.h"
 #include "Emu/Cell/lv2/sys_overlay.h"
 #include "Emu/Cell/lv2/sys_spu.h"
+#include "Emu/Cell/lv2/sys_net/network_context.h"
+#include "Emu/Cell/lv2/sys_net/lv2_socket.h"
 #include "Emu/Cell/Modules/cellGame.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
 
@@ -2917,7 +2919,7 @@ void Emulator::FinalizeRunRequest()
 
 	if (m_processes[m_active_process_index].RefSavestateExtensionFlags1() & SaveStateExtentionFlags1::ShouldCloseMenu)
 	{
-		g_fxo->get<SysutilMenuOpenStatus>().active = true;
+		fxo::get<SysutilMenuOpenStatus>().active = true;
 	}
 
 	idm::select<named_thread<spu_thread>>(spu_select);
@@ -3910,7 +3912,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 				bs_t<SaveStateExtentionFlags1> extension_flags{SaveStateExtentionFlags1::SupportsMenuOpenResume};
 
-				if (g_fxo->get<SysutilMenuOpenStatus>().active)
+				if (fxo::get<SysutilMenuOpenStatus>().active)
 				{
 					extension_flags += SaveStateExtentionFlags1::ShouldCloseMenu;
 				}
@@ -5004,6 +5006,10 @@ u32 Emulator::create_process()
 	// returns the correct value when the active process is the second one.
 	m_processes[0].set_pid(1);
 	m_processes[1].set_pid(2);
+	m_processes[1].local_fxo().reset();
+	m_processes[1].local_fxo().init<id_manager::id_map<named_thread<ppu_thread>>>();
+	m_processes[1].local_fxo().init<id_manager::id_map<named_thread<spu_thread>>>();
+	m_processes[1].local_fxo().init<id_manager::id_map<lv2_socket>>();
 
 	sys_log.notice("create_process: allocated process[1] VM base=%p sudo=%p exec=%p",
 		m_processes[1].vm_handle().base_addr, m_processes[1].vm_handle().sudo_addr,
@@ -5011,7 +5017,7 @@ u32 Emulator::create_process()
 	return 2; // pid = 2 (pid 1 is primary)
 }
 
-void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
+void Emulator::set_active_process(u32 pid, bool suspend_outgoing, bool resume_incoming, bool pause_outgoing_rsx)
 {
 	const u32 idx = pid - 1; // pid 1 → index 0, pid 2 → index 1
 	ensure(idx < m_processes.size());
@@ -5024,9 +5030,17 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
 
 	sys_log.notice("set_active_process: switching from pid %u to pid %u", m_active_process_index + 1, pid);
 	MPDBG_LOG(sys_log, "set_active_process: suspend_outgoing=%d", suspend_outgoing ? 1 : 0);
+	MPDBG_LOG(sys_log, "set_active_process: resume_incoming=%d", resume_incoming ? 1 : 0);
+	MPDBG_LOG(sys_log, "set_active_process: pause_outgoing_rsx=%d", pause_outgoing_rsx ? 1 : 0);
 
 	// Take exclusive lock — prevents concurrent guest-memory reads during swap
 	std::unique_lock lock(m_vm_swap_mutex);
+	std::unique_lock<shared_mutex> network_loop_lock;
+
+	if (g_fxo->is_init<network_context>())
+	{
+		network_loop_lock = std::unique_lock<shared_mutex>{g_fxo->get<network_context>().mutex_thread_loop};
+	}
 
 	// Suspend outgoing process's PPU/SPU threads (they must stop before pointers change)
 	if (suspend_outgoing)
@@ -5039,16 +5053,21 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
 	// fifo_ctrl bound to its own ctrl at init, so no in-place state
 	// shuffle is needed across set_active_process. Pause the outgoing
 	// thread before the VM swap, then unpause the incoming one after.
-	if (auto* out_rsx = m_processes[m_active_process_index].local_fxo().try_get<rsx::thread>())
-	{
-		if (suspend_outgoing)
+		if (auto* out_rsx = m_processes[m_active_process_index].local_fxo().try_get<rsx::thread>())
 		{
+			MPDBG_LOG(sys_log, "set_active_process: out_rsx pid=%u ext_lock_before=%u suspend_outgoing=%d pause_outgoing_rsx=%d",
+				out_rsx->owner_pid, out_rsx->external_interrupt_lock.load(), suspend_outgoing ? 1 : 0, pause_outgoing_rsx ? 1 : 0);
+
+			if (pause_outgoing_rsx)
+			{
 			// out_rsx->pause() blocks until the rsx::thread acks via its own
 			// wait_pause poll. Do NOT call wait_pause from this thread — it
 			// spins until unpause and deadlocks.
-			out_rsx->pause();
+				out_rsx->pause();
+				MPDBG_LOG(sys_log, "set_active_process: out_rsx pid=%u ext_lock_after_pause=%u",
+					out_rsx->owner_pid, out_rsx->external_interrupt_lock.load());
+			}
 		}
-	}
 
 	// Swap VM globals. Non-RSX system threads that read vm::g_* without
 	// taking m_vm_swap_mutex still race the swap; that limitation is
@@ -5067,13 +5086,30 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing)
 	m_input_foreground_pid = pid;
 	m_foreground_present_pid = pid;
 
-	if (auto* in_rsx = m_processes[idx].local_fxo().try_get<rsx::thread>())
-	{
-		in_rsx->unpause();
-	}
+		if (auto* in_rsx = m_processes[idx].local_fxo().try_get<rsx::thread>())
+		{
+			MPDBG_LOG(sys_log, "set_active_process: in_rsx pid=%u ext_lock_before_unpause=%u",
+				in_rsx->owner_pid, in_rsx->external_interrupt_lock.load());
+
+			// Symmetric with the outgoing pause(): only unpause if a matching pause
+		// was actually applied. The unpause primitive decrements an atomic u32
+		// counter, so unpause-without-pause underflows it to UINT32_MAX, which
+		// makes the per-rsx vblank thread skip post_vblank_event forever
+		// (RSXThread.cpp:1132 gates on !external_interrupt_lock). That breaks
+		// _gcm_intr_thread_system delivery to VSH and stalls VSH render.
+			if (in_rsx->external_interrupt_lock)
+			{
+				in_rsx->unpause();
+				MPDBG_LOG(sys_log, "set_active_process: in_rsx pid=%u ext_lock_after_unpause=%u",
+					in_rsx->owner_pid, in_rsx->external_interrupt_lock.load());
+			}
+		}
 
 	// Resume incoming process's PPU/SPU threads (now running with correct memory)
-	resume_process(pid);
+	if (resume_incoming)
+	{
+		resume_process(pid);
+	}
 }
 
 void Emulator::suspend_process(u32 pid)
@@ -5221,6 +5257,11 @@ void Emulator::resume_process(u32 pid)
 			spu.state.notify_one();
 		}
 	});
+
+	if (pid == 1 && IsVshCoResident())
+	{
+		lv2_obj::clear_scheduler_pending_for_pid(pid);
+	}
 }
 
 Emulator Emu;

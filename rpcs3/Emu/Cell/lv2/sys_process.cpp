@@ -2,6 +2,7 @@
 #include "sys_process.h"
 #include "Emu/multiproc_debug.h"
 #include "Emu/Memory/vm_ptr.h"
+#include "Emu/Memory/vm_var.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/VFS.h"
@@ -11,6 +12,7 @@
 #include "Crypto/unedat.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/PPUCallback.h"
 #include "sys_lwmutex.h"
 #include "sys_lwcond.h"
 #include "sys_mutex.h"
@@ -22,6 +24,7 @@
 #include "sys_mmapper.h"
 #include "sys_prx.h"
 #include "sys_overlay.h"
+#include "sys_ppu_thread.h"
 #include "sys_rwlock.h"
 #include "sys_semaphore.h"
 #include "sys_timer.h"
@@ -485,8 +488,8 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 					data = std::move(data)]() mutable
 				{
 					const bool use_vsh_native_overlay = static_cast<bool>(g_cfg.misc.use_vsh_native_overlay);
-					Emu.set_active_process(game_pid, /*suspend_outgoing=*/false); // Co-resident: keep VSH alive while game runs
 					Emu.SetUseVshNativeOverlay(use_vsh_native_overlay);
+					Emu.set_active_process(game_pid, /*suspend_outgoing=*/false); // Co-resident: keep VSH alive while game runs
 
 					Emu.current_process().RefArgv() = std::move(argv);
 					Emu.current_process().RefEnvp() = std::move(envp);

@@ -3,6 +3,7 @@
 #include "Emu/system_config.h"
 #include "Emu/IdManager.h"
 #include "Emu/VFS.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/Modules/cellGame.h"
 
@@ -63,6 +64,8 @@ atomic_t<usz> g_sysutil_callback_id_assigner = 0;
 
 struct sysutil_cb_manager
 {
+	using is_process_local = std::true_type;
+
 	struct alignas(8) registered_dispatcher
 	{
 		u32 event_code = 0;
@@ -123,7 +126,7 @@ struct sysutil_cb_manager
 
 void sysutil_register_cb_with_id_internal(std::function<s32(ppu_thread&)>&& cb, usz call_id)
 {
-	auto& cbm = *ensure(g_fxo->try_get<sysutil_cb_manager>());
+	auto& cbm = *ensure(fxo::try_get<sysutil_cb_manager>());
 
 	sysutil_cb_manager::dispatcher_cb info{std::move(cb)};
 
@@ -138,7 +141,7 @@ void sysutil_register_cb_with_id_internal(std::function<s32(ppu_thread&)>&& cb, 
 
 extern void sysutil_unregister_cb_with_id_internal(usz call_id)
 {
-	const auto cbm = g_fxo->try_get<sysutil_cb_manager>();
+	const auto cbm = fxo::try_get<sysutil_cb_manager>();
 
 	if (!cbm)
 	{
@@ -160,8 +163,9 @@ extern void sysutil_register_cb(std::function<s32(ppu_thread&)>&& cb)
 extern s32 sysutil_send_system_cmd(u64 status, u64 param)
 {
 	s32 count = 0;
+	const u32 owner_pid = Emu.current_process().pid();
 
-	if (auto cbm = g_fxo->try_get<sysutil_cb_manager>())
+	if (auto cbm = fxo::try_get<sysutil_cb_manager>())
 	{
 		if (status == CELL_SYSUTIL_DRAWING_BEGIN)
 		{
@@ -188,8 +192,12 @@ extern s32 sysutil_send_system_cmd(u64 status, u64 param)
 		{
 			if (cb.callback)
 			{
+				MPDBG_LOG(cellSysutil, "SYSUTIL_QUEUE_CMD: owner_pid=%u status=0x%llx param=0x%llx slot=%d callback=0x%x",
+					owner_pid, status, param, count, cb.callback.addr());
 				cbm->registered.push(sysutil_cb_manager::dispatcher_cb{[=](ppu_thread& ppu) -> s32
 				{
+					MPDBG_LOG(cellSysutil, "SYSUTIL_DISPATCH_CMD: owner_pid=%u ppu_id=0x%x name=%s status=0x%llx param=0x%llx callback=0x%x",
+						ppu.owner_pid, ppu.id, ppu.get_name(), status, param, cb.callback.addr());
 					// TODO: check it and find the source of the return value (void isn't equal to CELL_OK)
 					cb.callback(ppu, status, param, cb.user_data);
 					return CELL_OK;
@@ -200,12 +208,14 @@ extern s32 sysutil_send_system_cmd(u64 status, u64 param)
 		}
 	}
 
+	MPDBG_LOG(cellSysutil, "SYSUTIL_SEND_SYSTEM_CMD: owner_pid=%u status=0x%llx param=0x%llx queued=%d", owner_pid, status, param, count);
+
 	return count;
 }
 
 extern u64 get_sysutil_cb_manager_read_count()
 {
-	if (auto cbm = g_fxo->try_get<sysutil_cb_manager>())
+	if (auto cbm = fxo::try_get<sysutil_cb_manager>())
 	{
 		return cbm->read_counter;
 	}
@@ -215,7 +225,7 @@ extern u64 get_sysutil_cb_manager_read_count()
 
 extern bool send_open_home_menu_cmds()
 {
-	auto status = g_fxo->try_get<SysutilMenuOpenStatus>();
+	auto status = fxo::try_get<SysutilMenuOpenStatus>();
 
 	if (!status || status->active)
 	{
@@ -236,7 +246,7 @@ extern bool send_open_home_menu_cmds()
 
 extern void send_close_home_menu_cmds()
 {
-	auto status = g_fxo->try_get<SysutilMenuOpenStatus>();
+	auto status = fxo::try_get<SysutilMenuOpenStatus>();
 
 	if (!status || !status->active)
 	{
@@ -578,7 +588,8 @@ error_code cellSysutilCheckCallback(ppu_thread& ppu)
 {
 	cellSysutil.trace("cellSysutilCheckCallback()");
 
-	auto& cbm = g_fxo->get<sysutil_cb_manager>();
+	auto& cbm = fxo::get<sysutil_cb_manager>();
+	u32 dispatched = 0;
 
 	for (auto&& func : cbm.registered.pop_all())
 	{
@@ -592,6 +603,7 @@ error_code cellSysutilCheckCallback(ppu_thread& ppu)
 		// We would not realize that the game reacted in time and terminate it prematurely if we increased
 		// the counter after we called the callback and the callback did some time-consuming work.
 		cbm.read_counter++;
+		dispatched++;
 
 		if (s32 res = func.func(ppu))
 		{
@@ -603,6 +615,12 @@ error_code cellSysutilCheckCallback(ppu_thread& ppu)
 		{
 			return {};
 		}
+	}
+
+	if (dispatched)
+	{
+		MPDBG_LOG(cellSysutil, "SYSUTIL_CHECK_CALLBACK_DISPATCHED: owner_pid=%u ppu_id=0x%x name=%s dispatched=%u read_counter=%llu",
+			ppu.owner_pid, ppu.id, ppu.get_name(), dispatched, +cbm.read_counter);
 	}
 
 	return CELL_OK;
@@ -617,7 +635,7 @@ error_code cellSysutilRegisterCallback(u32 slot, vm::ptr<CellSysutilCallback> fu
 		return CELL_SYSUTIL_ERROR_VALUE;
 	}
 
-	auto& cbm = g_fxo->get<sysutil_cb_manager>();
+	auto& cbm = fxo::get<sysutil_cb_manager>();
 
 	cbm.callbacks[slot].store({func, userdata});
 
@@ -633,7 +651,7 @@ error_code cellSysutilUnregisterCallback(u32 slot)
 		return CELL_SYSUTIL_ERROR_VALUE;
 	}
 
-	auto& cbm = g_fxo->get<sysutil_cb_manager>();
+	auto& cbm = fxo::get<sysutil_cb_manager>();
 
 	cbm.callbacks[slot].store({});
 
@@ -789,7 +807,7 @@ error_code cellSysutilRegisterCallbackDispatcher(u32 event_code, u32 func_addr)
 {
 	cellSysutil.warning("cellSysutilRegisterCallbackDispatcher(event_code=0x%x, func_addr=0x%x)", event_code, func_addr);
 
-	auto& cbm = g_fxo->get<sysutil_cb_manager>();
+	auto& cbm = fxo::get<sysutil_cb_manager>();
 
 	for (u32 i = 0; i < cbm.dispatchers.size(); i++)
 	{
@@ -815,7 +833,7 @@ error_code cellSysutilUnregisterCallbackDispatcher(u32 event_code)
 {
 	cellSysutil.warning("cellSysutilUnregisterCallbackDispatcher(event_code=0x%x)", event_code);
 
-	auto& cbm = g_fxo->get<sysutil_cb_manager>();
+	auto& cbm = fxo::get<sysutil_cb_manager>();
 
 	for (u32 i = 0; i < cbm.dispatchers.size(); i++)
 	{

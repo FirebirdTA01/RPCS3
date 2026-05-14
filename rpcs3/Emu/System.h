@@ -158,6 +158,16 @@ class Emulator final
 	// global swap (cf. (III) target architecture).
 	mutable std::shared_mutex m_vm_swap_mutex;
 
+public:
+	// Host system threads (network_thread, etc) take this shared_lock around
+	// iterations of process-local IDM/fxo to serialize against set_active_process's
+	// VM-globals swap. The swap mutates vm::g_*, m_active_process_index, and
+	// m_input_foreground_pid — host threads reading these mid-iteration race-deref
+	// stale guest pointers.
+	std::shared_mutex& vm_swap_mutex() const { return m_vm_swap_mutex; }
+
+private:
+
 	bool m_co_resident_load = false;
 
 	games_config m_games_config;
@@ -276,7 +286,7 @@ public:
 
 	// Multi-process API (debug-only — not yet exposed via PS3 syscalls)
 	u32 create_process();
-	void set_active_process(u32 pid, bool suspend_outgoing = true);
+	void set_active_process(u32 pid, bool suspend_outgoing = true, bool resume_incoming = true, bool pause_outgoing_rsx = true);
 	u32 GetInputForegroundPid() const { return m_input_foreground_pid; }
 	void SetInputForegroundPid(u32 pid) { m_input_foreground_pid = pid; }
 	u32 GetForegroundPresentPid() const { return m_foreground_present_pid; }

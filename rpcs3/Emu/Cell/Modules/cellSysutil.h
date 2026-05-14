@@ -320,6 +320,8 @@ struct CellSysCacheParam
 template <u32 BaseEvent>
 struct SysutilEventStatus
 {
+	using is_process_local = std::true_type;
+
 	atomic_t<bool> active = false;
 };
 

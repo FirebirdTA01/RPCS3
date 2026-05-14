@@ -21,6 +21,19 @@ static ppu_thread* get_vsh_ppu_for_event_trace(cpu_thread* cpu = cpu_thread::get
 	return ppu && ppu->owner_pid == 1 ? ppu : nullptr;
 }
 
+static ppu_thread* get_vsh_waiter_for_event_trace(lv2_event_queue& queue)
+{
+	for (ppu_thread* waiter = +queue.pq; waiter; waiter = waiter->next_cpu)
+	{
+		if (waiter->owner_pid == 1)
+		{
+			return waiter;
+		}
+	}
+
+	return nullptr;
+}
+
 lv2_event_queue::lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64 ipc_key) noexcept
 	: id(idm::last_id())
 	, protocol{static_cast<u8>(protocol)}
@@ -190,13 +203,17 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 
 		awake(&ppu);
 
-		if (port && ppu.prio.load().prio < ensure(cpu_thread::get_current<ppu_thread>())->prio.load().prio)
+		if (port)
 		{
-			// Block event port disconnection for the time being of sending events
-			// PPU -> lower prio PPU is the only case that can cause thread blocking 
-			port->is_busy++;
-			ensure(notified_thread);
-			*notified_thread = true;
+			if (ppu_thread* const current_ppu = cpu_thread::get_current<ppu_thread>();
+				current_ppu && ppu.prio.load().prio < current_ppu->prio.load().prio)
+			{
+				// Block event port disconnection for the time being of sending events.
+				// PPU -> lower prio PPU is the only case that can cause thread blocking.
+				port->is_busy++;
+				ensure(notified_thread);
+				*notified_thread = true;
+			}
 		}
 	}
 	else
@@ -951,10 +968,13 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 		if (lv2_obj::check(port.queue))
 		{
 			const u64 source = port.name ? port.name : (u64{process_getpid() + 0u} << 32) | u64{eport_id};
-			if (trace_vsh)
+			ppu_thread* target_vsh = get_vsh_waiter_for_event_trace(*port.queue);
+			if (trace_vsh || target_vsh)
 			{
-				MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x target_queue=0x%x qname=0x%llx qkey=0x%llx source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx queued_before=%zu wait_ppu=%d ret=pending",
-					ppu->owner_pid, ppu->id, ppu->get_name(), eport_id, port.queue->id, port.queue->name, port.queue->key, source, data1, data2, data3, port.queue->events.size(), !!port.queue->pq);
+				MPDBG_LOG(sys_event, "EVENT_PORT_SEND: owner_pid=%u id=0x%x name=%s eport_id=0x%x target_queue=0x%x qname=0x%llx qkey=0x%llx target_vsh_waiter=0x%x target_vsh_name=%s source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx queued_before=%zu wait_ppu=%d ret=pending",
+					ppu ? ppu->owner_pid : 0, ppu ? ppu->id : 0, ppu ? ppu->get_name() : "<host>", eport_id,
+					port.queue->id, port.queue->name, port.queue->key, target_vsh ? target_vsh->id : 0, target_vsh ? target_vsh->get_name() : "",
+					source, data1, data2, data3, port.queue->events.size(), !!port.queue->pq);
 			}
 
 			return port.queue->send(source, data1, data2, data3, &notified_thread, ppu && port.queue->type == SYS_PPU_QUEUE ? &port : nullptr);
