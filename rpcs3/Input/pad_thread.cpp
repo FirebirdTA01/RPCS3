@@ -729,7 +729,6 @@ void pad_thread::operator()()
 				if (opened)
 				{
 					fxo::get<vk::vsh_overlay_state>().set_overlay_active(true);
-					sys_sm_queue_ext_event2(7);
 					Emu.SetInputForegroundPid(1);
 
 					bool queued_vsh_ps = false;
