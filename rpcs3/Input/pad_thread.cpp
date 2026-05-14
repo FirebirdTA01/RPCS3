@@ -23,6 +23,7 @@
 #include "Emu/Io/PadHandler.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/System.h"
+#include "Emu/IdManager.h"
 #include "Emu/multiproc_debug.h"
 #include "Emu/system_config.h"
 #include "Emu/RSX/Overlays/HomeMenu/overlay_home_menu.h"
@@ -30,7 +31,9 @@
 #include "Emu/RSX/VK/VKOverlayCapture.h"
 #include "Emu/Cell/lv2/sys_usbd.h"
 #include "Emu/Cell/lv2/sys_sm.h"
+#include "Emu/Cell/lv2/sys_prx.h"
 #include "Emu/Cell/lv2/sys_sync.h"
+#include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/Modules/cellGem.h"
 #include "Emu/Cell/Modules/cellPad.h"
 #include "Emu/Cell/timers.hpp"
@@ -65,6 +68,194 @@ namespace rsx
 
 namespace
 {
+	constexpr u32 vsh_xmb_begin_latch_addr = 0x72A508;
+	constexpr u32 vsh_xmb_cb_armed_addr = 0x72A509;
+	constexpr u32 vsh_xmb_dialog_type_addr = 0x72A50C;
+	constexpr u32 vsh_xmb_callback_arg_addr = 0x72A510;
+	constexpr u32 vsh_osk_name_addr = 0x67C978;
+	constexpr u32 vsh_osk_destructor_addr = 0x147844;
+	constexpr u32 vsh_toc_addr = 0x705648;
+
+	u32 read_be32_from_vsh(const u8* memory_base, u32 addr)
+	{
+		const u8* ptr = memory_base + addr;
+		return (u32{ptr[0]} << 24) | (u32{ptr[1]} << 16) | (u32{ptr[2]} << 8) | u32{ptr[3]};
+	}
+
+	void log_vsh_xmb_gate_transitions()
+	{
+#ifdef RPCS3_MULTIPROC_DEBUG
+		if (!Emu.IsVshCoResident())
+		{
+			return;
+		}
+
+		if (!Emu.IsRunning())
+		{
+			return;
+		}
+
+		const u8* vsh_vm = Emu.get_process_vm_base(1);
+		if (!vsh_vm)
+		{
+			return;
+		}
+
+		const u8 begin_latch = vsh_vm[vsh_xmb_begin_latch_addr];
+		const u8 cb_armed = vsh_vm[vsh_xmb_cb_armed_addr];
+		const u32 dialog_type = read_be32_from_vsh(vsh_vm, vsh_xmb_dialog_type_addr);
+		const u32 callback_arg = read_be32_from_vsh(vsh_vm, vsh_xmb_callback_arg_addr);
+
+		static bool initialized = false;
+		static u8 last_begin_latch = 0;
+		static u8 last_cb_armed = 0;
+		static u32 last_dialog_type = 0;
+		static u32 last_callback_arg = 0;
+
+		if (!initialized)
+		{
+			MPDBG_LOG(sys_log, "VSH_GATE_BEGIN_XMB_TRANSITION: prev=init now=0x%x active_pid=%u input_pid=%u",
+				begin_latch, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			MPDBG_LOG(sys_log, "VSH_GATE_CB_ARMED_TRANSITION: prev=init now=0x%x active_pid=%u input_pid=%u",
+				cb_armed, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			MPDBG_LOG(sys_log, "VSH_GATE_DIALOG_TYPE_TRANSITION: prev=init now=0x%x active_pid=%u input_pid=%u",
+				dialog_type, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			MPDBG_LOG(sys_log, "VSH_GATE_CALLBACK_ARG_TRANSITION: prev=init now=0x%x active_pid=%u input_pid=%u",
+				callback_arg, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			initialized = true;
+		}
+		else
+		{
+			if (begin_latch != last_begin_latch)
+			{
+				MPDBG_LOG(sys_log, "VSH_GATE_BEGIN_XMB_TRANSITION: prev=0x%x now=0x%x active_pid=%u input_pid=%u",
+					last_begin_latch, begin_latch, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			}
+
+			if (cb_armed != last_cb_armed)
+			{
+				MPDBG_LOG(sys_log, "VSH_GATE_CB_ARMED_TRANSITION: prev=0x%x now=0x%x active_pid=%u input_pid=%u",
+					last_cb_armed, cb_armed, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			}
+
+			if (dialog_type != last_dialog_type)
+			{
+				MPDBG_LOG(sys_log, "VSH_GATE_DIALOG_TYPE_TRANSITION: prev=0x%x now=0x%x active_pid=%u input_pid=%u",
+					last_dialog_type, dialog_type, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			}
+
+			if (callback_arg != last_callback_arg)
+			{
+				MPDBG_LOG(sys_log, "VSH_GATE_CALLBACK_ARG_TRANSITION: prev=0x%x now=0x%x active_pid=%u input_pid=%u",
+					last_callback_arg, callback_arg, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			}
+		}
+
+		last_begin_latch = begin_latch;
+		last_cb_armed = cb_armed;
+		last_dialog_type = dialog_type;
+		last_callback_arg = callback_arg;
+
+		static u32 last_helper_cia = 0;
+		u32 helper_cia = 0;
+		idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& ppu) {
+			if (ppu.owner_pid == 1 && std::string_view(ppu.get_name()).find("xmb_ingame_host") != umax) {
+				helper_cia = ppu.cia;
+			}
+		});
+		if (helper_cia) {
+			static u32 helper_log_count = 0;
+			if (helper_cia != last_helper_cia || helper_log_count < 3) {
+				MPDBG_LOG(sys_log, "VSH_HELPER_PARK: cia=0x%x prev_cia=0x%x active_pid=%u input_pid=%u",
+					helper_cia, last_helper_cia, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+				last_helper_cia = helper_cia;
+				helper_log_count++;
+			}
+		}
+#endif
+	}
+
+	void queue_vsh_osk_destructor_probe()
+	{
+#ifdef RPCS3_MULTIPROC_HOST_XMB_TRIGGER
+		const u32 old_host_owner_pid = id_manager::g_host_thread_owner_pid;
+		id_manager::g_host_thread_owner_pid = 1;
+
+		shared_ptr<named_thread<ppu_thread>> target = null_ptr;
+		shared_ptr<named_thread<ppu_thread>> fallback = null_ptr;
+		std::string candidate_summary;
+
+		idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& ppu)
+		{
+			if (ppu.owner_pid != 1)
+			{
+				return;
+			}
+
+			const std::string ppu_name = ppu.get_name();
+			const auto ppu_state = +ppu.state;
+			const u32 ppu_state_bits = static_cast<u32>(ppu_state);
+			fmt::append(candidate_summary, "%s0x%x:%s:state=0x%x:cia=0x%x",
+				candidate_summary.empty() ? "" : ";", ppu.id, ppu_name, ppu_state_bits, ppu.cia);
+
+			if (!fallback && ppu.id == ppu_thread::id_base)
+			{
+				fallback = idm::get_unlocked<named_thread<ppu_thread>>(ppu.id);
+			}
+
+			const bool name_is_interrupt = ppu_name.find("gcm") != umax || ppu_name.find("intr") != umax;
+			const bool active_candidate = !(ppu_state & (cpu_flag::wait + cpu_flag::suspend + cpu_flag::exit + cpu_flag::stop));
+			if (!target && name_is_interrupt && active_candidate)
+			{
+				target = idm::get_unlocked<named_thread<ppu_thread>>(ppu.id);
+			}
+		});
+
+		if (!target)
+		{
+			target = fallback;
+		}
+
+		id_manager::g_host_thread_owner_pid = old_host_owner_pid;
+
+		if (!target)
+		{
+			MPDBG_LOG(sys_log, "VSH_GATE_PPU_INJECT_QUEUED: queued=0 reason=no_target candidates=%s active_pid=%u input_pid=%u",
+				candidate_summary, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			return;
+		}
+
+		const u32 target_id = target->id;
+		const std::string target_name = target->get_name();
+		const auto target_state = +target->state;
+		const u32 target_state_bits = static_cast<u32>(target_state);
+		const u32 target_cia = target->cia;
+		const u64 target_lr = target->lr;
+
+		MPDBG_LOG(sys_log, "VSH_GATE_PPU_INJECT_PROBE: target_id=0x%x name=%s state=0x%x CIA=0x%x LR=0x%llx candidates=%s active_pid=%u input_pid=%u",
+			target_id, target_name, target_state_bits, target_cia, target_lr, candidate_summary, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+
+		if (target_state & (cpu_flag::exit + cpu_flag::stop))
+		{
+			MPDBG_LOG(sys_log, "VSH_GATE_PPU_INJECT_QUEUED: queued=0 reason=stopped target_id=0x%x name=%s state=0x%x active_pid=%u input_pid=%u",
+				target_id, target_name, target_state_bits, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+			return;
+		}
+
+		const ppu_func_opd_t osk_destructor_opd{vsh_osk_destructor_addr, vsh_toc_addr};
+		target->cmd_list({
+			{ ppu_cmd::set_args, 1 }, u64{vsh_osk_name_addr},
+			{ ppu_cmd::opd_call, 0 }, osk_destructor_opd,
+			{ ppu_cmd::sleep, 0 }
+		});
+		target->cmd_notify.store(1);
+		target->cmd_notify.notify_one();
+
+		MPDBG_LOG(sys_log, "VSH_GATE_PPU_INJECT_QUEUED: queued=1 target_id=0x%x name=%s state=0x%x CIA=0x%x active_pid=%u input_pid=%u",
+			target_id, target_name, target_state_bits, target_cia, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+#endif
+	}
+
 	bool pad_ps_button_pressed(const std::shared_ptr<Pad>& pad)
 	{
 		if (!pad->is_connected())
@@ -698,6 +889,7 @@ void pad_thread::operator()()
 		const bool vsh_coresident = Emu.IsVshCoResident();
 		const bool active_is_vsh  = Emu.IsActiveProcessVsh();
 		const bool use_vsh_native_overlay = Emu.UseVshNativeOverlay();
+		log_vsh_xmb_gate_transitions();
 		bool use_host_overlay;
 		if (!vsh_coresident)      use_host_overlay = true;   // case 1
 		else if (active_is_vsh)   use_host_overlay = false;  // case 2
@@ -745,6 +937,20 @@ void pad_thread::operator()()
 					const bool signaled_vsh_pad = send_sys_io_connect_event_for_pid(1, 0, CELL_PAD_STATUS_CONNECTED);
 					Emu.resume_process(1);
 					lv2_obj::clear_scheduler_pending_for_pid(1);
+#ifdef RPCS3_MULTIPROC_HOST_XMB_TRIGGER
+					if (u8* vsh_vm = Emu.get_process_vm_base(1))
+					{
+						const u8 begin_latch_before = vsh_vm[vsh_xmb_begin_latch_addr];
+						vsh_vm[vsh_xmb_begin_latch_addr] = 1;
+						MPDBG_LOG(sys_log, "VSH_GATE_HOST_BEGIN_XMB_LATCH: prev=0x%x now=0x1 active_pid=%u input_pid=%u",
+							begin_latch_before, Emu.current_process().pid(), Emu.GetInputForegroundPid());
+					}
+					MPDBG_LOG(sys_log, "VSH_GATE_HOST_PRX_LOAD_BEGIN: active_before=%u input_pid=%u",
+						Emu.current_process().pid(), Emu.GetInputForegroundPid());
+					const error_code load_result = sys_prx_load_module_from_host("/dev_flash/vsh/module/xmb_ingame.sprx");
+					MPDBG_LOG(sys_log, "VSH_GATE_HOST_PRX_LOAD: result=0x%x active_pid=%u input_pid=%u",
+						static_cast<u32>(static_cast<s32>(load_result)), Emu.current_process().pid(), Emu.GetInputForegroundPid());
+#endif
 					MPDBG_LOG(sys_log, "PAD_NATIVE_OVERLAY_ACTIVATED: input_pid=%u queued_vsh_ps=%d signaled_vsh_pad=%d",
 						Emu.GetInputForegroundPid(), queued_vsh_ps, signaled_vsh_pad ? 1 : 0);
 				}

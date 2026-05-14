@@ -4,18 +4,22 @@
 #include "Emu/System.h"
 #include "Emu/multiproc_debug.h"
 #include "Emu/system_config.h"
+#include "Emu/Memory/vm_var.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Crypto/unself.h"
 #include "Loader/ELF.h"
 
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/PPUCallback.h"
+#include "Emu/Cell/PPUInterpreter.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Crypto/unedat.h"
 #include "Utilities/StrUtil.h"
 #include "sys_fs.h"
 #include "sys_process.h"
 #include "sys_memory.h"
+#include "sys_sync.h"
 #include <span>
 
 extern void dump_executable(std::span<const u8> data, const ppu_module<lv2_obj>* _module, std::string_view title_id);
@@ -302,6 +306,232 @@ static error_code prx_load_module(const std::string& vpath, u64 flags, vm::ptr<s
 	sys_prx.success("Loaded module: \"%s\" (id=0x%x)", vpath, idm::last_id());
 
 	return not_an_error(idm::last_id());
+}
+
+static u32 read_vsh_be32(const u8* base, u32 addr)
+{
+	const u8* ptr = base + addr;
+	return (u32{ptr[0]} << 24) | (u32{ptr[1]} << 16) | (u32{ptr[2]} << 8) | u32{ptr[3]};
+}
+
+static u32 g_saved_active_pid_for_restore = 0;
+
+static void sys_prx_restore_active_process()
+{
+	const u32 restore_pid = std::exchange(g_saved_active_pid_for_restore, 0);
+	if (restore_pid && Emu.current_process().pid() != restore_pid)
+	{
+		Emu.set_active_process(restore_pid, false, true, false);
+	}
+}
+
+static void sys_prx_host_load_and_start_callback(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, ppu_intrp_func*)
+{
+	const error_code load_result = prx_load_module("/dev_flash/vsh/module/xmb_ingame.sprx", 0, vm::null);
+	MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_LOAD_RESULT: result=0x%x active=%u",
+		static_cast<u32>(static_cast<s32>(load_result)), Emu.current_process().pid());
+
+	if (load_result < 0)
+	{
+		sys_prx_restore_active_process();
+		return;
+	}
+
+	const u32 id = static_cast<u32>(static_cast<s32>(load_result));
+
+	vm::var<sys_prx_start_stop_module_option_t> opt;
+	opt->size = opt.size();
+	opt->cmd = 1;
+	opt->entry2.set(-1);
+
+	const error_code phase1 = _sys_prx_start_module(ppu, id, 0, opt);
+	if (phase1 < 0)
+	{
+		MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_START_PHASE1: id=0x%x result=0x%x", id, static_cast<u32>(static_cast<s32>(phase1)));
+		sys_prx_restore_active_process();
+		return;
+	}
+
+	MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_START_PHASE1: id=0x%x entry=0x%x entry2=0x%x",
+		id, opt->entry.addr(), opt->entry2.addr());
+
+	s32 start_result = SYS_PRX_RESIDENT;
+
+	if (opt->entry2.addr() == umax && opt->entry.addr() == umax)
+	{
+		sys_prx_restore_active_process();
+		return;
+	}
+
+	const vm::addr_t argp_addr{vm::alloc(256, vm::main)};
+	if (!argp_addr)
+	{
+		MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_ARGP_ALLOC: result=0x%x active=%u", CELL_ENOMEM, Emu.current_process().pid());
+		sys_prx_restore_active_process();
+		return;
+	}
+
+	u8* argp_buf = static_cast<u8*>(vm::base(argp_addr));
+	std::memset(argp_buf, 0, 256);
+
+	const u32 argp_base = static_cast<u32>(argp_addr);
+	const u32 cell_addr = argp_base + 32;
+	const u32 object_addr = argp_base + 64;
+	const u32 hash_table_addr = argp_base + 128;
+	const u32 root_node_addr = argp_base + 160;
+	const u32 terminal_node_addr = argp_base + 192;
+
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 0) = cell_addr;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 32) = object_addr;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 64 + 0x24) = hash_table_addr;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 128 + 4) = root_node_addr;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 128 + 8) = 1;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 160 + 0) = terminal_node_addr;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 160 + 8) = terminal_node_addr;
+	*reinterpret_cast<be_t<u32>*>(argp_buf + 160 + 12) = 1;
+	*(argp_buf + 160 + 21) = 0;
+	*(argp_buf + 192 + 21) = 1;
+
+	MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_ARGP_TABLE: base=0x%x cell=0x%x object=0x%x hash=0x%x root=0x%x term=0x%x active=%u",
+		argp_base, cell_addr, object_addr, hash_table_addr, root_node_addr, terminal_node_addr, Emu.current_process().pid());
+
+	const vm::ptr<void> argp_ptr = vm::cast(argp_addr);
+	sys_prx_restore_active_process();
+
+	if (opt->entry2.addr() != umax)
+	{
+		start_result = opt->entry2(ppu, opt->entry, 256, argp_ptr);
+	}
+	else
+	{
+		start_result = opt->entry(ppu, 256, argp_ptr);
+	}
+
+	MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_ENTRY_RETURN: id=0x%x result=0x%x", id, static_cast<u32>(start_result));
+
+	opt->cmd = 2;
+	opt->res = static_cast<u64>(static_cast<s64>(start_result));
+
+	const error_code phase2 = _sys_prx_start_module(ppu, id, 0, opt);
+	MPDBG_LOG(sys_prx, "VSH_GATE_HOST_PRX_START_PHASE2: id=0x%x start_result=0x%x result=0x%x",
+		id, static_cast<u32>(start_result), static_cast<u32>(static_cast<s32>(phase2)));
+}
+
+static error_code sys_prx_request_begin_ingame_xmb_from_host()
+{
+	constexpr u32 helper_stack_size = 64 * 1024;
+	constexpr u32 request_state_addr = 0x721740;
+	constexpr u32 request_context_addr = 0x721748;
+	constexpr u32 request_init_gate_addr = 0x72FC00;
+
+	auto& dct = fxo::get<lv2_memory_container>();
+	if (!dct.take(helper_stack_size))
+	{
+		MPDBG_LOG(sys_prx, "VSH_GATE_HOST_REQUEST_BEGIN_IN_GAME_XMB: result=0x%x reason=mem_container active=%u", CELL_ENOMEM, Emu.current_process().pid());
+		return CELL_ENOMEM;
+	}
+
+	const vm::addr_t stack_base{vm::alloc(helper_stack_size, vm::stack, 4096)};
+	if (!stack_base)
+	{
+		dct.free(helper_stack_size);
+		MPDBG_LOG(sys_prx, "VSH_GATE_HOST_REQUEST_BEGIN_IN_GAME_XMB: result=0x%x reason=stack_alloc active=%u", CELL_ENOMEM, Emu.current_process().pid());
+		return CELL_ENOMEM;
+	}
+
+	ppu_thread_params p{};
+	p.stack_addr = stack_base;
+	p.stack_size = helper_stack_size;
+	p.entry = ppu_func_opd_t{};
+
+	const auto helper = idm::make_ptr<named_thread<ppu_thread>>(p, "xmb_ingame_host_request", 1001, 1);
+	if (!helper)
+	{
+		vm::dealloc(stack_base);
+		dct.free(helper_stack_size);
+		MPDBG_LOG(sys_prx, "VSH_GATE_HOST_REQUEST_BEGIN_IN_GAME_XMB: result=0x%x reason=thread_create active=%u", CELL_EAGAIN, Emu.current_process().pid());
+		return CELL_EAGAIN;
+	}
+
+	if (u8* vsh_vm = Emu.get_process_vm_base(1))
+	{
+		const u32 init_gate_before = read_vsh_be32(vsh_vm, request_init_gate_addr);
+		vsh_vm[request_init_gate_addr + 0] = 0;
+		vsh_vm[request_init_gate_addr + 1] = 0;
+		vsh_vm[request_init_gate_addr + 2] = 0;
+		vsh_vm[request_init_gate_addr + 3] = 0;
+		MPDBG_LOG(sys_prx, "VSH_GATE_INIT_GATE_CLEAR: before=0x%x now=0x0 active=%u",
+			init_gate_before, Emu.current_process().pid());
+		MPDBG_LOG(sys_prx, "VSH_GATE_REQUEST_GATES: c721740=0x%x c721748=0x%x active=%u",
+			read_vsh_be32(vsh_vm, request_state_addr), read_vsh_be32(vsh_vm, request_context_addr), Emu.current_process().pid());
+	}
+	else
+	{
+		MPDBG_LOG(sys_prx, "VSH_GATE_REQUEST_GATES: vm=null active=%u", Emu.current_process().pid());
+	}
+
+	if (u8* vsh_vm_w = Emu.get_process_vm_base(1))
+	{
+		const u32 before_low = read_vsh_be32(vsh_vm_w, 0x721748);
+		const u32 before_high = read_vsh_be32(vsh_vm_w, 0x72174C);
+		vsh_vm_w[0x72FC00] = 0;
+		vsh_vm_w[0x72FC01] = 0;
+		vsh_vm_w[0x72FC02] = 0;
+		vsh_vm_w[0x72FC03] = 0;
+		vsh_vm_w[0x721748] = 0;
+		vsh_vm_w[0x721749] = 0;
+		vsh_vm_w[0x72174A] = 0;
+		vsh_vm_w[0x72174B] = 0;
+		vsh_vm_w[0x72174C] = 0;
+		vsh_vm_w[0x72174D] = 0;
+		vsh_vm_w[0x72174E] = 0;
+		vsh_vm_w[0x72174F] = 0;
+		MPDBG_LOG(sys_prx, "VSH_GATE_INIT_GATE_CLEAR: c721748_lo=0x%x c721748_hi=0x%x now=0x0 active=%u", before_low, before_high, Emu.current_process().pid());
+	}
+
+	helper->cmd_list({
+		{ppu_cmd::ptr_call, 0}, std::bit_cast<u64>(&sys_prx_host_load_and_start_callback),
+		{ppu_cmd::sleep, 0},
+	});
+
+	helper->state.test_and_reset(cpu_flag::stop);
+	ensure(lv2_obj::awake(helper.get()));
+	helper->cmd_notify.store(1);
+	helper->cmd_notify.notify_one();
+
+	MPDBG_LOG(sys_prx, "VSH_GATE_HOST_REQUEST_BEGIN_IN_GAME_XMB: result=0x0 helper_id=0x%x stack=0x%x active=%u",
+		helper->id, static_cast<u32>(stack_base), Emu.current_process().pid());
+	return CELL_OK;
+}
+
+error_code sys_prx_load_module_from_host(const std::string& vpath)
+{
+	const u32 old_owner = id_manager::g_host_thread_owner_pid;
+
+	id_manager::g_host_thread_owner_pid = 1;
+	(void)vpath;
+
+	if (g_saved_active_pid_for_restore)
+	{
+		MPDBG_LOG(sys_prx, "VSH_GATE_HOST_REQUEST_BEGIN_IN_GAME_XMB: result=0x%x reason=in_flight saved_active=%u active=%u",
+			CELL_EBUSY, g_saved_active_pid_for_restore, Emu.current_process().pid());
+		id_manager::g_host_thread_owner_pid = old_owner;
+		return CELL_EBUSY;
+	}
+
+	const u32 old_active_pid = Emu.current_process().pid();
+	Emu.set_active_process(1, false, true, false);
+	g_saved_active_pid_for_restore = old_active_pid;
+
+	const error_code result = sys_prx_request_begin_ingame_xmb_from_host();
+	if (result < 0)
+	{
+		sys_prx_restore_active_process();
+	}
+
+	id_manager::g_host_thread_owner_pid = old_owner;
+
+	return result;
 }
 
 fs::file make_file_view(fs::file&& file, u64 offset, u64 size);

@@ -270,3 +270,4 @@ error_code _sys_prx_get_module_id_by_name(ppu_thread& ppu, vm::cptr<char> name, 
 error_code _sys_prx_get_module_id_by_address(ppu_thread& ppu, u32 addr);
 error_code _sys_prx_start(ppu_thread& ppu);
 error_code _sys_prx_stop(ppu_thread& ppu);
+error_code sys_prx_load_module_from_host(const std::string& vpath);
