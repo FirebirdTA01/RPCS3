@@ -148,6 +148,81 @@ lv2_config::~lv2_config() noexcept
 	}
 }
 
+// LV2 Config IO Event
+bool lv2_config_handle::queue_io_event(std::span<const u8> payload)
+{
+	const auto event = make_shared<lv2_config_io_event>(next_io_event_id++, payload);
+
+	{
+		std::lock_guard lock(mutex_io_events);
+		io_events.emplace_back(event);
+	}
+
+	if (event->notify(*this))
+	{
+		return true;
+	}
+
+	std::lock_guard lock(mutex_io_events);
+
+	const auto it = std::find_if(io_events.begin(), io_events.end(), [&](const shared_ptr<lv2_config_io_event>& pending)
+	{
+		return pending == event;
+	});
+
+	if (it != io_events.end())
+	{
+		io_events.erase(it);
+	}
+
+	return false;
+}
+
+shared_ptr<lv2_config_io_event> lv2_config_handle::find_io_event(u32 event_id)
+{
+	reader_lock lock(mutex_io_events);
+
+	const auto it = std::find_if(io_events.begin(), io_events.end(), [&](const shared_ptr<lv2_config_io_event>& pending)
+	{
+		return pending && pending->id == event_id;
+	});
+
+	if (it == io_events.end())
+	{
+		return null_ptr;
+	}
+
+	return *it;
+}
+
+void lv2_config_handle::remove_io_event(u32 event_id)
+{
+	std::lock_guard lock(mutex_io_events);
+
+	const auto it = std::find_if(io_events.begin(), io_events.end(), [&](const shared_ptr<lv2_config_io_event>& pending)
+	{
+		return pending && pending->id == event_id;
+	});
+
+	if (it != io_events.end())
+	{
+		io_events.erase(it);
+	}
+}
+
+bool lv2_config_io_event::notify(const lv2_config_handle& handle) const
+{
+	return handle.notify(SYS_CONFIG_EVENT_SOURCE_IO, id, payload.size());
+}
+
+void lv2_config_io_event::write(void* dst) const
+{
+	if (!payload.empty())
+	{
+		memcpy(dst, payload.data(), payload.size());
+	}
+}
+
 // LV2 Config Service Listener
 bool lv2_config_service_listener::check_service(const lv2_config_service& service) const
 {
@@ -468,12 +543,50 @@ error_code sys_config_unregister_service(u32 config_hdl, u32 service_hdl)
 
 
 /*
- * IO Events - TODO
+ * IO Events
  */
-error_code sys_config_get_io_event(u32 config_hdl, u32 event_id /*?*/, vm::ptr<void> out_buf /*?*/, u64 size /*?*/)
+error_code sys_config_get_io_event(u32 config_hdl, u32 event_id, vm::ptr<void> out_buf, u64 size)
 {
-	sys_config.todo("sys_config_get_io_event(config_hdl=0x%x, event_id=0x%x, out_buf=*0x%x, size=%lld)", config_hdl, event_id, out_buf, size);
+	sys_config.trace("sys_config_get_io_event(config_hdl=0x%x, event_id=0x%x, out_buf=*0x%x, size=%lld)", config_hdl, event_id, out_buf, size);
+
+	const auto cfg = idm::get_unlocked<lv2_config_handle>(config_hdl);
+	if (!cfg)
+	{
+		return CELL_ESRCH;
+	}
+
+	const auto event = cfg->find_io_event(event_id);
+	if (!event)
+	{
+		return CELL_ESRCH;
+	}
+
+	if (!event->check_buffer_size(size))
+	{
+		return CELL_E2BIG;
+	}
+
+	event->write(out_buf.get_ptr());
+	cfg->remove_io_event(event_id);
 	return CELL_OK;
+}
+
+bool sys_config_queue_io_event(u32 config_hdl, std::span<const u8> payload)
+{
+	const auto cfg = idm::get_unlocked<lv2_config_handle>(config_hdl);
+	if (!cfg)
+	{
+		sys_config.error("sys_config_queue_io_event(config_hdl=0x%x): config handle not found", config_hdl);
+		return false;
+	}
+
+	if (!cfg->queue_io_event(payload))
+	{
+		sys_config.error("sys_config_queue_io_event(config_hdl=0x%x): failed to notify queue", config_hdl);
+		return false;
+	}
+
+	return true;
 }
 
 error_code sys_config_register_io_error_listener(u32 config_hdl)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "util/atomic.hpp"
 #include "util/shared_ptr.hpp"
 #include "Emu/Cell/timers.hpp"
@@ -41,6 +43,7 @@ class lv2_config_handle;
 class lv2_config_service;
 class lv2_config_service_listener;
 class lv2_config_service_event;
+class lv2_config_io_event;
 
 
 // Known sys_config service IDs
@@ -179,6 +182,10 @@ private:
 	// queue for service/io event notifications
 	const shared_ptr<lv2_event_queue> queue;
 
+	shared_mutex mutex_io_events;
+	std::vector<shared_ptr<lv2_config_io_event>> io_events;
+	atomic_t<u32> next_io_event_id = 0;
+
 	bool send_queue_event(u64 source, u64 d1, u64 d2, u64 d3) const
 	{
 		if (auto sptr = queue)
@@ -213,6 +220,10 @@ public:
 	{
 		return send_queue_event(source, idm_id, data2, data3);
 	}
+
+	bool queue_io_event(std::span<const u8> payload);
+	shared_ptr<lv2_config_io_event> find_io_event(u32 event_id);
+	void remove_io_event(u32 event_id);
 };
 
 /*
@@ -406,6 +417,26 @@ public:
 };
 
 /*
+ * LV2 IO Event object (*not* managed by IDM)
+ */
+class lv2_config_io_event
+{
+public:
+	const u32 id;
+	const std::vector<u8> payload;
+
+	lv2_config_io_event(u32 _id, std::span<const u8> _payload) noexcept
+		: id(_id)
+		, payload(_payload.begin(), _payload.end())
+	{
+	}
+
+	bool notify(const lv2_config_handle& handle) const;
+	void write(void* dst) const;
+	bool check_buffer_size(usz size) const { return payload.size() <= size; }
+};
+
+/*
  * Syscalls
  */
 /*516*/ error_code sys_config_open(u32 equeue_hdl, vm::ptr<u32> out_config_hdl);
@@ -416,7 +447,8 @@ public:
 /*521*/ error_code sys_config_register_service(u32 config_hdl, sys_config_service_id service_id, u64 user_id, u64 verbosity, vm::ptr<u8> data_buf, u64 size, vm::ptr<u32> out_service_hdl);
 /*522*/ error_code sys_config_unregister_service(u32 config_hdl, u32 service_hdl);
 
-// Following syscalls have not been REd yet
-/*523*/ error_code sys_config_get_io_event(u32 config_hdl, u32 event_id /*?*/, vm::ptr<void> out_buf /*?*/, u64 size /*?*/);
+/*523*/ error_code sys_config_get_io_event(u32 config_hdl, u32 event_id, vm::ptr<void> out_buf, u64 size);
 /*524*/ error_code sys_config_register_io_error_listener(u32 config_hdl);
 /*525*/ error_code sys_config_unregister_io_error_listener(u32 config_hdl);
+
+bool sys_config_queue_io_event(u32 config_hdl, std::span<const u8> payload);
