@@ -163,9 +163,9 @@ bool lv2_config_service_listener::check_service(const lv2_config_service& servic
 		return false;
 	}
 
-	// realhw only seems to send the pad connected events to the listeners that provided 0x01 as the first byte of their data buffer
-	// TODO: Figure out how this filter works more properly
-	if (service_id == SYS_CONFIG_SERVICE_PADMANAGER && (data.empty() || data[0] != 0x01))
+	// realhw filters by the listener payload. VSH registers selector bytes 0x01, 0x02, and 0x04 for PadManager.
+	// Treat the observed selector values as eligible until the full filter semantics are mapped.
+	if (service_id == SYS_CONFIG_SERVICE_PADMANAGER && (data.empty() || (data[0] != 0x01 && data[0] != 0x02 && data[0] != 0x04)))
 	{
 		return false;
 	}
