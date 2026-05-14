@@ -46,6 +46,8 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 {
 	const u32 start0 = _func.entry_point;
 
+	spu_cache::flush_pending_runtime_registrations();
+
 	const auto add_loc = m_spurt->add_empty(std::move(_func));
 
 	if (!add_loc)

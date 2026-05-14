@@ -22,6 +22,7 @@
 #include "SPUDisAsm.h"
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <unordered_set>
 
@@ -34,6 +35,13 @@ const extern spu_decoder<spu_iname> g_spu_iname;
 const extern spu_decoder<spu_iflag> g_spu_iflag;
 
 constexpr u32 s_reg_max = spu_recompiler_base::s_reg_max;
+
+namespace
+{
+	std::mutex g_spu_cache_pending_mutex;
+	std::deque<spu_program> g_spu_cache_pending_runtime_registration;
+	atomic_t<bool> g_spu_cache_pending_runtime_registration_ready = false;
+}
 
 template<typename T>
 struct span_less
@@ -730,6 +738,39 @@ void spu_cache::add(const spu_program& func)
 	m_file.write_gather(gather, 3);
 }
 
+void spu_cache::flush_pending_runtime_registrations()
+{
+	if (!g_spu_cache_pending_runtime_registration_ready)
+	{
+		return;
+	}
+
+	std::deque<spu_program> pending;
+
+	{
+		std::lock_guard lock(g_spu_cache_pending_mutex);
+
+		if (!g_spu_cache_pending_runtime_registration_ready.exchange(false))
+		{
+			return;
+		}
+
+		pending = std::move(g_spu_cache_pending_runtime_registration);
+		g_spu_cache_pending_runtime_registration.clear();
+	}
+
+	auto& runtime = g_fxo->get<spu_runtime>();
+
+	for (spu_program& func : pending)
+	{
+		if (auto add_loc = runtime.add_empty(std::move(func)))
+		{
+			// These entries came from disk; runtime recompiles must not append them again.
+			add_loc->cached.exchange(1);
+		}
+	}
+}
+
 void spu_cache::initialize(bool build_existing_cache)
 {
 	spu_runtime::g_interpreter = spu_runtime::g_gateway;
@@ -772,6 +813,13 @@ void spu_cache::initialize(bool build_existing_cache)
 
 	// Read cache
 	auto func_list = cache.get();
+
+	{
+		std::lock_guard lock(g_spu_cache_pending_mutex);
+		g_spu_cache_pending_runtime_registration = func_list;
+		g_spu_cache_pending_runtime_registration_ready.release(!g_spu_cache_pending_runtime_registration.empty());
+	}
+
 	atomic_t<usz> fnext{};
 	atomic_t<u8> fail_flag{0};
 

@@ -49,6 +49,8 @@ public:
 
 	static void initialize(bool build_existing_cache = true);
 
+	static void flush_pending_runtime_registrations();
+
 	struct precompile_data_t
 	{
 		u32 vaddr;

@@ -1626,11 +1626,18 @@ public:
 		const u32 start0 = _func.entry_point;
 		const usz func_size = _func.data.size();
 
+		spu_cache::flush_pending_runtime_registrations();
+
 		const auto add_loc = m_spurt->add_empty(std::move(_func));
 
 		if (!add_loc)
 		{
 			return nullptr;
+		}
+
+		if (add_loc->compiled)
+		{
+			return add_loc->compiled;
 		}
 
 		const spu_program& func = add_loc->data;
