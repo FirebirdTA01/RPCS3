@@ -2,6 +2,7 @@
 #include "sys_prx.h"
 
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/system_config.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
@@ -624,6 +625,37 @@ error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_
 		}
 	};
 
+	const bool preserve_vsh_monitor = Emu.IsVshCoResident() && ppu.owner_pid == 1 && Emu.get_process_vm_base(2) && std::string_view(prx->name) == "basic_plugins.sprx";
+
+	if (preserve_vsh_monitor)
+	{
+		const u32 cmd = pOpt->cmd & 0xf;
+
+		switch (cmd)
+		{
+		case 1:
+		{
+			sys_prx.warning("_sys_prx_stop_module(id=0x%x, cmd=0x%x): refusing to stop VSH monitor module '%s' while child app is active",
+				id, cmd, prx->name);
+			MPDBG_LOG(sys_prx, "VSH_NATIVE_MONITOR_REFUSE_STOP: id=0x%x cmd=0x%x name=%s state=0x%x active_pid=%u caller_id=0x%x caller_name=%s",
+				id, cmd, prx->name, +prx->state, Emu.current_process().pid(), ppu.id, ppu.get_name());
+			return CELL_PRX_ERROR_CAN_NOT_STOP;
+		}
+		case 4:
+		{
+			pOpt->entry.set(~0ull);
+			set_entry2(~0ull);
+			sys_prx.warning("_sys_prx_stop_module(id=0x%x, cmd=0x%x): preserving VSH monitor module '%s' for native in-game XMB path",
+				id, cmd, prx->name);
+			MPDBG_LOG(sys_prx, "VSH_NATIVE_MONITOR_PRESERVE_STOP: id=0x%x cmd=0x%x name=%s state=0x%x active_pid=%u caller_id=0x%x caller_name=%s",
+				id, cmd, prx->name, +prx->state, Emu.current_process().pid(), ppu.id, ppu.get_name());
+			return CELL_OK;
+		}
+		default:
+			break;
+		}
+	}
+
 	switch (pOpt->cmd & 0xf)
 	{
 	case 1:
@@ -707,6 +739,19 @@ error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_
 error_code _sys_prx_unload_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_prx_unload_module_option_t> pOpt)
 {
 	ppu.state += cpu_flag::wait;
+
+	if (Emu.IsVshCoResident() && ppu.owner_pid == 1 && Emu.get_process_vm_base(2))
+	{
+		if (const auto prx = idm::get_unlocked<lv2_obj, lv2_prx>(id);
+			prx && std::string_view(prx->name) == "basic_plugins.sprx")
+		{
+			sys_prx.warning("_sys_prx_unload_module(id=0x%x, flags=0x%x, pOpt=*0x%x): preserving VSH monitor module '%s' for native in-game XMB path",
+				id, flags, pOpt, prx->name);
+			MPDBG_LOG(sys_prx, "VSH_NATIVE_MONITOR_PRESERVE_PRX: id=0x%x name=%s active_pid=%u caller_id=0x%x caller_name=%s",
+				id, prx->name, Emu.current_process().pid(), ppu.id, ppu.get_name());
+			return CELL_OK;
+		}
+	}
 
 	// Get the PRX, free the used memory and delete the object and its ID
 	const auto prx = idm::withdraw<lv2_obj, lv2_prx>(id, [](lv2_prx& prx) -> CellPrxError

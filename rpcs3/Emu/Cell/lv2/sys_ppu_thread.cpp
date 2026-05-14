@@ -2,6 +2,7 @@
 #include "sys_ppu_thread.h"
 
 #include "Emu/System.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/IdManager.h"
 
 #include "Emu/Cell/ErrorCodes.h"
@@ -19,6 +20,11 @@
 #include <thread>
 
 LOG_CHANNEL(sys_ppu_thread);
+
+static bool vsh_child_process_active()
+{
+	return Emu.IsVshCoResident() && Emu.get_process_vm_base(2);
+}
 
 // Simple structure to cleanup previous thread, because can't remove its own thread
 struct ppu_thread_cleaner
@@ -83,6 +89,17 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	u64 writer_mask = 0;
 
 	sys_ppu_thread.trace("_sys_ppu_thread_exit(errorcode=0x%llx)", errorcode);
+
+	if (vsh_child_process_active() && ppu.owner_pid == 1 &&
+		std::string_view(ppu.get_name()).find("SceVshPower") != umax)
+	{
+		sys_ppu_thread.warning("_sys_ppu_thread_exit(errorcode=0x%llx): preserving VSH monitor thread '%s' while child app is active",
+			errorcode, ppu.get_name());
+		MPDBG_LOG(sys_ppu_thread, "VSH_NATIVE_MONITOR_REFUSE_THREAD_EXIT: id=0x%x name=%s errorcode=0x%llx active_pid=%u cia=0x%x lr=0x%x",
+			ppu.id, ppu.get_name(), errorcode, Emu.current_process().pid(), ppu.cia, ppu.lr);
+		ppu.state -= cpu_flag::wait;
+		return;
+	}
 
 	ppu_join_status old_status;
 
@@ -192,6 +209,15 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 
 	auto thread = idm::get<named_thread<ppu_thread>>(thread_id, [&, notify = lv2_obj::notify_all_t()](ppu_thread& thread) -> CellError
 	{
+		if (vsh_child_process_active() && ppu.owner_pid == 1 &&
+			std::string_view(thread.get_name()).find("SceVshPower") != umax)
+		{
+			MPDBG_LOG(sys_ppu_thread, "VSH_NATIVE_MONITOR_REFUSE_JOIN: caller_id=0x%x caller_name=%s target_id=0x%x target_name=%s target_cia=0x%x target_state=0x%x target_func=%s target_last=%s active_pid=%u",
+				ppu.id, ppu.get_name(), thread.id, thread.get_name(), thread.cia, +thread.state,
+				thread.current_function ? thread.current_function : "", thread.last_function ? thread.last_function : "", Emu.current_process().pid());
+			return CELL_EBUSY;
+		}
+
 		CellError result = thread.joiner.atomic_op([&](ppu_join_status& value) -> CellError
 		{
 			switch (value)
