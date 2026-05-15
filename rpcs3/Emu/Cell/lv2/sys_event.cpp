@@ -313,6 +313,8 @@ error_code sys_event_queue_create(cpu_thread& cpu, vm::ptr<u32> equeue_id, vm::p
 	{
 		MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x equeue_id=0x%x ipc_key=0x%llx size=%d protocol=0x%x type=0x%x qname=0x%llx ret=0x%x",
 			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), *equeue_id, ipc_key, size, protocol, type, name, static_cast<u32>(CELL_OK));
+		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_QUEUE_CREATE: queue_id=0x%x key=0x%llx qname=0x%llx owner_pid=%u",
+			*equeue_id, ipc_key, name, trace_ppu->owner_pid);
 	}
 
 	return CELL_OK;
@@ -837,6 +839,8 @@ error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeu
 	{
 		MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_LOCAL: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x qname=0x%llx key=0x%llx ret=0x%x",
 			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id, equeue_id, qname, qkey, static_cast<u32>(CELL_OK));
+		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_LOCAL: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u",
+			eport_id, equeue_id, qkey, qname, trace_ppu->owner_pid);
 	}
 
 	return CELL_OK;
@@ -975,6 +979,8 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 					ppu ? ppu->owner_pid : 0, ppu ? ppu->id : 0, ppu ? ppu->get_name() : "<host>", eport_id,
 					port.queue->id, port.queue->name, port.queue->key, target_vsh ? target_vsh->id : 0, target_vsh ? target_vsh->get_name() : "",
 					source, data1, data2, data3, port.queue->events.size(), !!port.queue->pq);
+				MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_SEND: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx source_pid=%u",
+					eport_id, port.queue->id, port.queue->key, port.queue->name, data1, data2, data3, ppu ? ppu->owner_pid : process_getpid());
 			}
 
 			return port.queue->send(source, data1, data2, data3, &notified_thread, ppu && port.queue->type == SYS_PPU_QUEUE ? &port : nullptr);
