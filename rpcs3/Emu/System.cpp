@@ -5025,10 +5025,20 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing, bool resume_in
 
 	if (idx == m_active_process_index)
 	{
+		MPDBG_LOG(sys_log, "VSH_RENDER_PROCESS_STATE: phase=active_noop pid=%u input_pid=%u present_pid=%u suspend=%d resume=%d pause_rsx=%d",
+			pid, GetInputForegroundPid(), GetForegroundPresentPid(),
+			suspend_outgoing ? 1 : 0, resume_incoming ? 1 : 0, pause_outgoing_rsx ? 1 : 0);
 		return; // No-op
 	}
 
+	const u32 old_pid = m_active_process_index + 1;
+	const u32 old_input_pid = GetInputForegroundPid();
+	const u32 old_present_pid = GetForegroundPresentPid();
+
 	sys_log.notice("set_active_process: switching from pid %u to pid %u", m_active_process_index + 1, pid);
+	MPDBG_LOG(sys_log, "VSH_RENDER_PROCESS_STATE: phase=active_switch_begin from_pid=%u to_pid=%u input_pid=%u present_pid=%u suspend=%d resume=%d pause_rsx=%d",
+		old_pid, pid, old_input_pid, old_present_pid,
+		suspend_outgoing ? 1 : 0, resume_incoming ? 1 : 0, pause_outgoing_rsx ? 1 : 0);
 	MPDBG_LOG(sys_log, "set_active_process: suspend_outgoing=%d", suspend_outgoing ? 1 : 0);
 	MPDBG_LOG(sys_log, "set_active_process: resume_incoming=%d", resume_incoming ? 1 : 0);
 	MPDBG_LOG(sys_log, "set_active_process: pause_outgoing_rsx=%d", pause_outgoing_rsx ? 1 : 0);
@@ -5110,6 +5120,10 @@ void Emulator::set_active_process(u32 pid, bool suspend_outgoing, bool resume_in
 	{
 		resume_process(pid);
 	}
+
+	MPDBG_LOG(sys_log, "VSH_RENDER_PROCESS_STATE: phase=active_switch_done from_pid=%u to_pid=%u input_pid=%u present_pid=%u suspend=%d resume=%d pause_rsx=%d",
+		old_pid, pid, GetInputForegroundPid(), GetForegroundPresentPid(),
+		suspend_outgoing ? 1 : 0, resume_incoming ? 1 : 0, pause_outgoing_rsx ? 1 : 0);
 }
 
 void Emulator::suspend_process(u32 pid)

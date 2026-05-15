@@ -2,6 +2,9 @@
 #include "sys_semaphore.h"
 
 #include "Emu/IdManager.h"
+#include "Emu/Memory/vm.h"
+#include "Emu/multiproc_debug.h"
+#include "Emu/System.h"
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
@@ -9,6 +12,19 @@
 #include "util/asm.hpp"
 
 LOG_CHANNEL(sys_semaphore);
+
+namespace
+{
+	bool is_vsh_paf_cron_waiter(ppu_thread* waiter)
+	{
+		return waiter && waiter->owner_pid == 1 && (waiter->get_name().find("ScePafCron") != umax || waiter->cia == 0xc37f4);
+	}
+
+	u32 read_vsh_u32_for_paf_trace(u32 addr)
+	{
+		return vm::check_addr<4>(addr) ? static_cast<u32>(vm::read32(addr)) : 0xffff'ffff;
+	}
+}
 
 lv2_sema::lv2_sema(utils::serial& ar)
 	: protocol(ar)
@@ -294,6 +310,27 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 	else
 	{
 		std::lock_guard lock(sem->mutex);
+
+		for (auto cpu = +sem->sq; cpu; cpu = cpu->next_cpu)
+		{
+			auto* waiter = static_cast<ppu_thread*>(cpu);
+			if (is_vsh_paf_cron_waiter(waiter))
+			{
+				MPDBG_LOG(sys_semaphore, "VSH_PAF_WAKE: kind=sem_post caller_pid=%u caller_id=0x%x caller_name=%s caller_cia=0x%x caller_lr=0x%llx sem_id=0x%x sem_key=0x%llx sem_name=0x%llx sem_val=%d count=%d waiter_id=0x%x waiter_name=%s waiter_cia=0x%x waiter_lr=0x%llx waiter_state=0x%llx active_pid=%u input_pid=%u present_pid=%u",
+					ppu.owner_pid, ppu.id, ppu.get_name(), ppu.cia, ppu.lr,
+					sem_id, sem->key, sem->name, static_cast<s32>(sem->val), count,
+					waiter->id, waiter->get_name(), waiter->cia, waiter->lr, +waiter->state.load(),
+					Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid());
+				MPDBG_LOG(sys_semaphore, "VSH_PAF_GLOBALS: reason=sem_post_scepafcron active_pid=%u input_pid=%u present_pid=%u f7a8=0x%x f7d4=0x%x f7d8=0x%x f7dc=0x%x f7e0=0x%x f7e8=0x%x f838=0x%x f840=0x%x f854=0x%x f89c=0x%x f8a0=0x%x",
+					Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid(),
+					read_vsh_u32_for_paf_trace(0x72f7a8), read_vsh_u32_for_paf_trace(0x72f7d4),
+					read_vsh_u32_for_paf_trace(0x72f7d8), read_vsh_u32_for_paf_trace(0x72f7dc),
+					read_vsh_u32_for_paf_trace(0x72f7e0), read_vsh_u32_for_paf_trace(0x72f7e8),
+					read_vsh_u32_for_paf_trace(0x72f838), read_vsh_u32_for_paf_trace(0x72f840),
+					read_vsh_u32_for_paf_trace(0x72f854), read_vsh_u32_for_paf_trace(0x72f89c),
+					read_vsh_u32_for_paf_trace(0x72f8a0));
+			}
+		}
 
 		for (auto cpu = +sem->sq; cpu; cpu = cpu->next_cpu)
 		{

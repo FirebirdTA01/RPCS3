@@ -2605,9 +2605,20 @@ namespace rsx
 
 	void thread::flip(const display_flip_info_t& info)
 	{
-		MPDBG_LOG(rsx_log, "RSX_THREAD_FLIP: owner_pid=%u int_flip_index=%d buffer=%u skip=%d emu_flip=%d in_progress=%d draw_calls=%u async_flags=0x%x",
-			owner_pid, int_flip_index, info.buffer, info.skip_frame ? 1 : 0, info.emu_flip ? 1 : 0,
-			info.in_progress ? 1 : 0, info.stats.draw_calls, static_cast<u32>(async_flip_requested.load()));
+		const u32 dma_get = ctrl ? static_cast<u32>(ctrl->get) : umax;
+		const u32 dma_put = ctrl ? (static_cast<u32>(ctrl->put) & ~3u) : umax;
+		const u32 dma_ref = ctrl ? static_cast<u32>(ctrl->ref) : umax;
+		const u32 fifo_get = fifo_ctrl ? fifo_ctrl->get_pos() : umax;
+		const u32 fifo_cmd = fifo_ctrl ? fifo_ctrl->last_cmd() : umax;
+		const u32 fifo_args = fifo_ctrl ? fifo_ctrl->get_remaining_args_count() : umax;
+		const bool fifo_idle = ctrl == nullptr || dma_get == dma_put;
+
+		MPDBG_LOG(rsx_log, "RSX_THREAD_FLIP: owner_pid=%u active_pid=%u input_pid=%u present_pid=%u int_flip_index=%d buffer=%u skip=%d emu_flip=%d in_progress=%d draw_calls=%u async_flags=0x%x fifo_idle=%d dma_get=0x%x dma_put=0x%x dma_ref=0x%x fifo_get=0x%x fifo_cmd=0x%x fifo_args=%u rsx_running=%d ext_lock=%u",
+			owner_pid, Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid(),
+			int_flip_index, info.buffer, info.skip_frame ? 1 : 0, info.emu_flip ? 1 : 0,
+			info.in_progress ? 1 : 0, info.stats.draw_calls, static_cast<u32>(async_flip_requested.load()),
+			fifo_idle ? 1 : 0, dma_get, dma_put, dma_ref, fifo_get, fifo_cmd, fifo_args,
+			rsx_thread_running ? 1 : 0, external_interrupt_lock.load());
 
 		m_eng_interrupt_mask.clear(rsx::display_interrupt);
 

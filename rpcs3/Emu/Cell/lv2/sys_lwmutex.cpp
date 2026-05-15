@@ -2,13 +2,76 @@
 #include "sys_lwmutex.h"
 
 #include "Emu/IdManager.h"
+#include "Emu/Memory/vm.h"
+#include "Emu/System.h"
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/multiproc_debug.h"
 
 #include "util/asm.hpp"
 
 LOG_CHANNEL(sys_lwmutex);
+
+static atomic_t<u32> g_vsh_view_module_lwmutex_watch_id = 0;
+
+static bool is_vsh_view_module_lwmutex_trace(const ppu_thread& ppu, u32 lwmutex_id)
+{
+	if (ppu.owner_pid != 1)
+	{
+		return false;
+	}
+
+	const std::string name = ppu.get_name();
+	return name.find("view_module_load") != umax || ppu.cia == 0x61527c || ppu.lr == 0x620538 || (lwmutex_id && lwmutex_id == g_vsh_view_module_lwmutex_watch_id.load());
+}
+
+static void log_vsh_view_module_lwmutex_state(const char* phase, const ppu_thread& ppu, u32 lwmutex_id, const lv2_lwmutex* mutex = nullptr, u32 result = 0xffff'ffff)
+{
+	u32 control_addr = 0;
+	u32 control_owner = 0xffff'ffff;
+	u32 control_waiter = 0xffff'ffff;
+	u32 control_attr = 0xffff'ffff;
+	u32 control_recursive = 0xffff'ffff;
+	u32 control_sleep_queue = 0xffff'ffff;
+	u64 lwmutex_name = 0;
+	s32 signaled = 0;
+	u32 sq_head_id = 0;
+	u32 sq_head_cia = 0;
+	u64 sq_head_lr = 0;
+	u64 sq_head_state = 0;
+	std::string sq_head_name;
+
+	if (mutex)
+	{
+		control_addr = mutex->control.addr();
+		lwmutex_name = static_cast<u64>(mutex->name);
+		signaled = atomic_storage<s32>::load(mutex->lv2_control.raw().signaled);
+
+		if (mutex->control && vm::check_addr<sizeof(sys_lwmutex_t)>(control_addr))
+		{
+			control_owner = mutex->control->vars.owner.load();
+			control_waiter = mutex->control->vars.waiter.load();
+			control_attr = mutex->control->attribute;
+			control_recursive = mutex->control->recursive_count;
+			control_sleep_queue = mutex->control->sleep_queue;
+		}
+
+		if (const ppu_thread* head = mutex->load_sq())
+		{
+			sq_head_id = head->id;
+			sq_head_cia = head->cia;
+			sq_head_lr = head->lr;
+			sq_head_state = static_cast<u32>(+head->state.load());
+			sq_head_name = head->get_name();
+		}
+	}
+
+	MPDBG_LOG(sys_lwmutex, "VSH_VIEW_MODULE_LWMUTEX: phase=%s pid=%u tid=0x%x name=%s cia=0x%x lr=0x%llx lwmutex_id=0x%x result=0x%x control=0x%x owner=0x%x waiter=0x%x attr=0x%x recursive=0x%x sleep_queue=0x%x lwname=0x%llx signaled=%d sq_head=0x%x sq_head_name=%s sq_head_cia=0x%x sq_head_lr=0x%llx sq_head_state=0x%llx active_pid=%u",
+		phase, ppu.owner_pid, ppu.id, ppu.get_name(), ppu.cia, ppu.lr, lwmutex_id, result,
+		control_addr, control_owner, control_waiter, control_attr, control_recursive, control_sleep_queue,
+		lwmutex_name, signaled, sq_head_id, sq_head_name, sq_head_cia, sq_head_lr, sq_head_state, Emu.current_process().pid());
+}
 
 lv2_lwmutex::lv2_lwmutex(utils::serial& ar)
 	: protocol(ar)
@@ -139,9 +202,21 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 	sys_lwmutex.trace("_sys_lwmutex_lock(lwmutex_id=0x%x, timeout=0x%llx)", lwmutex_id, timeout);
 
 	ppu.gpr[3] = CELL_OK;
+	const bool vsh_trace = is_vsh_view_module_lwmutex_trace(ppu, lwmutex_id);
+
+	if (vsh_trace)
+	{
+		g_vsh_view_module_lwmutex_watch_id.release(lwmutex_id);
+		log_vsh_view_module_lwmutex_state("lock_enter", ppu, lwmutex_id);
+	}
 
 	const auto mutex = idm::get<lv2_obj, lv2_lwmutex>(lwmutex_id, [&, notify = lv2_obj::notify_all_t()](lv2_lwmutex& mutex)
 	{
+		if (vsh_trace)
+		{
+			log_vsh_view_module_lwmutex_state("lock_inspect", ppu, lwmutex_id, &mutex);
+		}
+
 		if (s32 signal = mutex.lv2_control.fetch_op([](lv2_lwmutex::control_data_t& data)
 		{
 			if (data.signaled)
@@ -156,6 +231,11 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 			if (~signal & 1)
 			{
 				ppu.gpr[3] = CELL_EBUSY;
+			}
+
+			if (vsh_trace)
+			{
+				log_vsh_view_module_lwmutex_state("lock_signal", ppu, lwmutex_id, &mutex, static_cast<u32>(ppu.gpr[3]));
 			}
 
 			return true;
@@ -173,16 +253,36 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 			}
 
 			ppu.cancel_sleep = 0;
+			if (vsh_trace)
+			{
+				log_vsh_view_module_lwmutex_state("lock_owned_after_try", ppu, lwmutex_id, &mutex, static_cast<u32>(ppu.gpr[3]));
+			}
 			return true;
+		}
+
+		if (vsh_trace)
+		{
+			log_vsh_view_module_lwmutex_state("lock_wait", ppu, lwmutex_id, &mutex);
 		}
 
 		const bool finished = !mutex.sleep(ppu, timeout);
 		notify.cleanup();
+
+		if (vsh_trace && finished)
+		{
+			log_vsh_view_module_lwmutex_state("lock_finished_in_sleep", ppu, lwmutex_id, &mutex, static_cast<u32>(ppu.gpr[3]));
+		}
+
 		return finished;
 	});
 
 	if (!mutex)
 	{
+		if (vsh_trace)
+		{
+			log_vsh_view_module_lwmutex_state("lock_invalid", ppu, lwmutex_id, nullptr, static_cast<u32>(CELL_ESRCH));
+		}
+
 		if (lwmutex_id >> 24 == lv2_lwmutex::id_base >> 24)
 		{
 			return { CELL_ESRCH, lwmutex_id };
@@ -193,6 +293,11 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 	if (mutex.ret)
 	{
+		if (vsh_trace)
+		{
+			log_vsh_view_module_lwmutex_state("lock_return_immediate", ppu, lwmutex_id, mutex.ptr.get(), static_cast<u32>(ppu.gpr[3]));
+		}
+
 		return not_an_error(ppu.gpr[3]);
 	}
 
@@ -291,6 +396,11 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 		}
 	}
 
+	if (vsh_trace)
+	{
+		log_vsh_view_module_lwmutex_state("lock_return_wait", ppu, lwmutex_id, mutex.ptr.get(), static_cast<u32>(ppu.gpr[3]));
+	}
+
 	return not_an_error(ppu.gpr[3]);
 }
 
@@ -339,11 +449,26 @@ error_code _sys_lwmutex_unlock(ppu_thread& ppu, u32 lwmutex_id)
 	ppu.state += cpu_flag::wait;
 
 	sys_lwmutex.trace("_sys_lwmutex_unlock(lwmutex_id=0x%x)", lwmutex_id);
+	const bool vsh_trace = is_vsh_view_module_lwmutex_trace(ppu, lwmutex_id);
+
+	if (vsh_trace)
+	{
+		log_vsh_view_module_lwmutex_state("unlock_enter", ppu, lwmutex_id);
+	}
 
 	const auto mutex = idm::check<lv2_obj, lv2_lwmutex>(lwmutex_id, [&, notify = lv2_obj::notify_all_t()](lv2_lwmutex& mutex)
 	{
+		if (vsh_trace)
+		{
+			log_vsh_view_module_lwmutex_state("unlock_inspect", ppu, lwmutex_id, &mutex);
+		}
+
 		if (mutex.try_unlock(false))
 		{
+			if (vsh_trace)
+			{
+				log_vsh_view_module_lwmutex_state("unlock_signal_only", ppu, lwmutex_id, &mutex, static_cast<u32>(CELL_OK));
+			}
 			return;
 		}
 
@@ -351,6 +476,11 @@ error_code _sys_lwmutex_unlock(ppu_thread& ppu, u32 lwmutex_id)
 
 		if (const auto cpu = mutex.reown<ppu_thread>())
 		{
+			if (vsh_trace)
+			{
+				log_vsh_view_module_lwmutex_state("unlock_reown", *static_cast<ppu_thread*>(cpu), lwmutex_id, &mutex, static_cast<u32>(CELL_OK));
+			}
+
 			if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
 			{
 				ppu.state += cpu_flag::again;
@@ -364,7 +494,16 @@ error_code _sys_lwmutex_unlock(ppu_thread& ppu, u32 lwmutex_id)
 
 	if (!mutex)
 	{
+		if (vsh_trace)
+		{
+			log_vsh_view_module_lwmutex_state("unlock_invalid", ppu, lwmutex_id, nullptr, static_cast<u32>(CELL_ESRCH));
+		}
 		return CELL_ESRCH;
+	}
+
+	if (vsh_trace)
+	{
+		log_vsh_view_module_lwmutex_state("unlock_return", ppu, lwmutex_id, mutex, static_cast<u32>(CELL_OK));
 	}
 
 	return CELL_OK;

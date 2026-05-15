@@ -578,6 +578,49 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 
 	sys_ppu_thread.warning("_sys_ppu_thread_create(): Thread \"%s\" created (id=0x%x, func=*0x%x, rtoc=0x%x, user-tls=0x%x)", ppu_name, tid, entry.addr, entry.rtoc, tls);
 
+	if (ppu.owner_pid == 1)
+	{
+		u64 arg0 = 0;
+		u32 arg8 = 0;
+		u32 arg16 = 0;
+		const bool arg0_ok = vm::check_addr<8>(static_cast<u32>(arg));
+		const bool arg8_ok = vm::check_addr<4>(static_cast<u32>(arg + 8));
+		const bool arg16_ok = vm::check_addr<4>(static_cast<u32>(arg + 16));
+		if (arg0_ok)
+		{
+			arg0 = vm::read64(static_cast<u32>(arg));
+		}
+
+		if (arg8_ok)
+		{
+			arg8 = vm::read32(static_cast<u32>(arg + 8));
+		}
+
+		if (arg16_ok)
+		{
+			arg16 = vm::read32(static_cast<u32>(arg + 16));
+		}
+
+		MPDBG_LOG(sys_ppu_thread, "VSH_PPU_THREAD_CREATE: thread_id=0x%x name=%s entry=0x%x rtoc=0x%x arg=0x%llx arg0=0x%llx arg0_ok=%d arg8=0x%x arg8_ok=%d arg16=0x%x arg16_ok=%d owner_pid=%u",
+			tid, ppu_name, entry.addr, entry.rtoc, arg, arg0, arg0_ok, arg8, arg8_ok, arg16, arg16_ok, ppu.owner_pid);
+
+		if (ppu_name == "view_module_load" && vm::check_addr<0x80>(static_cast<u32>(arg)))
+		{
+			u32 words[32]{};
+			for (u32 i = 0; i < 32; i++)
+			{
+				words[i] = vm::read32(static_cast<u32>(arg + i * 4));
+			}
+
+			MPDBG_LOG(sys_ppu_thread, "VSH_VIEW_MODULE_ARG_DUMP: thread_id=0x%x arg=0x%llx w00=0x%x w04=0x%x w08=0x%x w0c=0x%x w10=0x%x w14=0x%x w18=0x%x w1c=0x%x w20=0x%x w24=0x%x w28=0x%x w2c=0x%x w30=0x%x w34=0x%x w38=0x%x w3c=0x%x w40=0x%x w44=0x%x w48=0x%x w4c=0x%x w50=0x%x w54=0x%x w58=0x%x w5c=0x%x w60=0x%x w64=0x%x w68=0x%x w6c=0x%x w70=0x%x w74=0x%x w78=0x%x w7c=0x%x",
+				tid, arg,
+				words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+				words[8], words[9], words[10], words[11], words[12], words[13], words[14], words[15],
+				words[16], words[17], words[18], words[19], words[20], words[21], words[22], words[23],
+				words[24], words[25], words[26], words[27], words[28], words[29], words[30], words[31]);
+		}
+	}
+
 	ppu.check_state();
 	*thread_id = tid;
 	return CELL_OK;

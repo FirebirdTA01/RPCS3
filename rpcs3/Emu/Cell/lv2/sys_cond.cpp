@@ -2,6 +2,8 @@
 
 #include "util/serialization.hpp"
 #include "Emu/IdManager.h"
+#include "Emu/Memory/vm.h"
+#include "Emu/multiproc_debug.h"
 #include "Emu/System.h"
 
 #include "Emu/Cell/ErrorCodes.h"
@@ -12,6 +14,43 @@
 #include "util/asm.hpp"
 
 LOG_CHANNEL(sys_cond);
+
+namespace
+{
+	bool is_vsh_paf_text_waiter(ppu_thread* waiter)
+	{
+		return waiter && waiter->owner_pid == 1 && (waiter->get_name().find("ScePafText") != umax || waiter->cia == 0x1554d8);
+	}
+
+	u32 read_vsh_u32_for_paf_trace(u32 addr)
+	{
+		return vm::check_addr<4>(addr) ? static_cast<u32>(vm::read32(addr)) : 0xffff'ffff;
+	}
+
+	void log_vsh_paf_cond_waiters(ppu_thread& ppu, const char* kind, u32 cond_id, lv2_cond& cond)
+	{
+		for (auto cpu = +cond.sq; cpu; cpu = cpu->next_cpu)
+		{
+			auto* waiter = static_cast<ppu_thread*>(cpu);
+			if (is_vsh_paf_text_waiter(waiter))
+			{
+				MPDBG_LOG(sys_cond, "VSH_PAF_WAKE: kind=%s caller_pid=%u caller_id=0x%x caller_name=%s caller_cia=0x%x caller_lr=0x%llx cond_id=0x%x cond_key=0x%llx cond_name=0x%llx mtx_id=0x%x waiter_id=0x%x waiter_name=%s waiter_cia=0x%x waiter_lr=0x%llx waiter_state=0x%llx active_pid=%u input_pid=%u present_pid=%u",
+					kind, ppu.owner_pid, ppu.id, ppu.get_name(), ppu.cia, ppu.lr,
+					cond_id, cond.key, cond.name, cond.mtx_id,
+					waiter->id, waiter->get_name(), waiter->cia, waiter->lr, +waiter->state.load(),
+					Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid());
+				MPDBG_LOG(sys_cond, "VSH_PAF_GLOBALS: reason=%s_scepaftext active_pid=%u input_pid=%u present_pid=%u f7a8=0x%x f7d4=0x%x f7d8=0x%x f7dc=0x%x f7e0=0x%x f7e8=0x%x f838=0x%x f840=0x%x f854=0x%x f89c=0x%x f8a0=0x%x",
+					kind, Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid(),
+					read_vsh_u32_for_paf_trace(0x72f7a8), read_vsh_u32_for_paf_trace(0x72f7d4),
+					read_vsh_u32_for_paf_trace(0x72f7d8), read_vsh_u32_for_paf_trace(0x72f7dc),
+					read_vsh_u32_for_paf_trace(0x72f7e0), read_vsh_u32_for_paf_trace(0x72f7e8),
+					read_vsh_u32_for_paf_trace(0x72f838), read_vsh_u32_for_paf_trace(0x72f840),
+					read_vsh_u32_for_paf_trace(0x72f854), read_vsh_u32_for_paf_trace(0x72f89c),
+					read_vsh_u32_for_paf_trace(0x72f8a0));
+			}
+		}
+	}
+}
 
 lv2_cond::lv2_cond(utils::serial& ar) noexcept
 	: key(ar)
@@ -179,6 +218,7 @@ error_code sys_cond_signal(ppu_thread& ppu, u32 cond_id)
 			if (atomic_storage<ppu_thread*>::load(cond.sq))
 			{
 				std::lock_guard lock(cond.mutex->mutex);
+				log_vsh_paf_cond_waiters(ppu, "cond_signal", cond_id, cond);
 
 				if (ppu.state & cpu_flag::suspend)
 				{
@@ -251,6 +291,7 @@ error_code sys_cond_signal_all(ppu_thread& ppu, u32 cond_id)
 			if (atomic_storage<ppu_thread*>::load(cond.sq))
 			{
 				std::lock_guard lock(cond.mutex->mutex);
+				log_vsh_paf_cond_waiters(ppu, "cond_signal_all", cond_id, cond);
 
 				if (ppu.state & cpu_flag::suspend)
 				{
@@ -338,6 +379,7 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 			if (atomic_storage<ppu_thread*>::load(cond.sq))
 			{
 				std::lock_guard lock(cond.mutex->mutex);
+				log_vsh_paf_cond_waiters(ppu, "cond_signal_to", cond_id, cond);
 
 				if (ppu.state & cpu_flag::suspend)
 				{

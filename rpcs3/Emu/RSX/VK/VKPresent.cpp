@@ -434,10 +434,16 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	const u32 trace_buffer_width = info.buffer < display_buffers_count ? static_cast<u32>(display_buffers[info.buffer].width) : 0;
 	const u32 trace_buffer_height = info.buffer < display_buffers_count ? static_cast<u32>(display_buffers[info.buffer].height) : 0;
 	const u32 trace_buffer_pitch = info.buffer < display_buffers_count ? static_cast<u32>(display_buffers[info.buffer].pitch) : 0;
+	const u32 dma_get = ctrl ? static_cast<u32>(ctrl->get) : umax;
+	const u32 dma_put = ctrl ? (static_cast<u32>(ctrl->put) & ~3u) : umax;
+	const u32 fifo_get = fifo_ctrl ? fifo_ctrl->get_pos() : umax;
+	const u32 fifo_cmd = fifo_ctrl ? fifo_ctrl->last_cmd() : umax;
+	const bool fifo_idle = ctrl == nullptr || dma_get == dma_put;
 
-	MPDBG_LOG(rsx_log, "VK_PRESENT_ENTRY: owner_pid=%u foreground_pid=%u buffer=%u offset=0x%x size=%ux%u pitch=0x%x skip=%d emu_flip=%d swapchain_unavailable=%d draw_calls=%u submit_count=%u",
-		owner_pid, foreground_pid, info.buffer, buffer_offset, trace_buffer_width, trace_buffer_height, trace_buffer_pitch,
-		info.skip_frame ? 1 : 0, info.emu_flip ? 1 : 0, swapchain_unavailable ? 1 : 0, info.stats.draw_calls, info.stats.submit_count);
+	MPDBG_LOG(rsx_log, "VK_PRESENT_ENTRY: owner_pid=%u active_pid=%u input_pid=%u foreground_pid=%u buffer=%u offset=0x%x size=%ux%u pitch=0x%x skip=%d emu_flip=%d swapchain_unavailable=%d draw_calls=%u submit_count=%u fifo_idle=%d dma_get=0x%x dma_put=0x%x fifo_get=0x%x fifo_cmd=0x%x overlay_active=%d",
+		owner_pid, Emu.current_process().pid(), Emu.GetInputForegroundPid(), foreground_pid, info.buffer, buffer_offset, trace_buffer_width, trace_buffer_height, trace_buffer_pitch,
+		info.skip_frame ? 1 : 0, info.emu_flip ? 1 : 0, swapchain_unavailable ? 1 : 0, info.stats.draw_calls, info.stats.submit_count,
+		fifo_idle ? 1 : 0, dma_get, dma_put, fifo_get, fifo_cmd, fxo::get<vk::vsh_overlay_state>().overlay_active() ? 1 : 0);
 
 	const bool foreground_present = owner_pid == foreground_pid;
 
