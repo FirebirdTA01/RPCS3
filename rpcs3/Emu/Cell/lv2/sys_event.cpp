@@ -3,6 +3,7 @@
 
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 
 #include "Emu/Cell/ErrorCodes.h"
@@ -10,8 +11,13 @@
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/multiproc_debug.h"
 #include "sys_process.h"
+#include "sys_mmapper.h"
+#include "sys_prx.h"
 
 #include "util/asm.hpp"
+
+#include <chrono>
+#include <thread>
 
 LOG_CHANNEL(sys_event);
 
@@ -32,6 +38,467 @@ static ppu_thread* get_vsh_waiter_for_event_trace(lv2_event_queue& queue)
 	}
 
 	return nullptr;
+}
+
+struct vsh_mcore_cmd_object_dump
+{
+	u32 ptr = 0;
+	bool ok20 = false;
+	bool ok30 = false;
+	u32 w00 = 0;
+	u32 w04 = 0;
+	u32 w08 = 0;
+	u32 w0c = 0;
+	u32 w10 = 0;
+	u32 w14 = 0;
+	u32 w18 = 0;
+	u32 w1c = 0;
+	bool inner_ok = false;
+	u32 i00 = 0;
+	u32 i04 = 0;
+	u32 i08 = 0;
+	u32 i0c = 0;
+	u32 i10 = 0;
+	u32 i14 = 0;
+	u32 i18 = 0;
+	u32 i1c = 0;
+};
+
+atomic_t<u32> g_vsh_delayed_snapshot_request = 0;
+static atomic_t<u32> g_vsh_mcore_keep_active_after_async = 0;
+
+void request_vsh_pid1_delayed_snapshot(const char* reason);
+void service_vsh_pid1_delayed_snapshot(ppu_thread& ppu, const char* reason);
+
+static u32 read_vsh_u32_for_paf_trace(u32 addr)
+{
+	return vm::check_addr<4>(addr) ? static_cast<u32>(vm::read32(addr)) : 0xffff'ffff;
+}
+
+static void log_vsh_paf_globals(const char* reason)
+{
+	MPDBG_LOG(sys_event, "VSH_PAF_GLOBALS: reason=%s active_pid=%u input_pid=%u present_pid=%u f7a8=0x%x f7d4=0x%x f7d8=0x%x f7dc=0x%x f7e0=0x%x f7e8=0x%x f838=0x%x f840=0x%x f854=0x%x f89c=0x%x f8a0=0x%x",
+		reason, Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid(),
+		read_vsh_u32_for_paf_trace(0x72f7a8), read_vsh_u32_for_paf_trace(0x72f7d4),
+		read_vsh_u32_for_paf_trace(0x72f7d8), read_vsh_u32_for_paf_trace(0x72f7dc),
+		read_vsh_u32_for_paf_trace(0x72f7e0), read_vsh_u32_for_paf_trace(0x72f7e8),
+		read_vsh_u32_for_paf_trace(0x72f838), read_vsh_u32_for_paf_trace(0x72f840),
+		read_vsh_u32_for_paf_trace(0x72f854), read_vsh_u32_for_paf_trace(0x72f89c),
+		read_vsh_u32_for_paf_trace(0x72f8a0));
+}
+
+struct vsh_pid1_wait_context
+{
+	u32 queue_id = 0;
+	u64 queue_key = 0;
+	u64 queue_name = 0;
+	u32 queued = 0;
+};
+
+static vsh_pid1_wait_context find_vsh_pid1_event_wait_context(const ppu_thread& ppu)
+{
+	vsh_pid1_wait_context result{};
+
+	idm::select<lv2_obj, lv2_event_queue>([&](u32, lv2_event_queue& queue)
+	{
+		std::lock_guard lock(queue.mutex);
+
+		for (ppu_thread* waiter = +queue.pq; waiter; waiter = waiter->next_cpu)
+		{
+			if (waiter == &ppu)
+			{
+				result.queue_id = queue.id;
+				result.queue_key = queue.key;
+				result.queue_name = queue.name;
+				result.queued = static_cast<u32>(queue.events.size());
+				break;
+			}
+		}
+	});
+
+	return result;
+}
+
+static void dump_vsh_pid1_threads_after_mcore(const char* reason)
+{
+	u32 total = 0;
+	u32 waiting_on_queue = 0;
+
+	MPDBG_LOG(sys_event, "VSH_PID1_THREAD_SNAPSHOT: phase=begin reason=%s active_pid=%u input_pid=%u present_pid=%u",
+		reason, Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid());
+
+	idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& ppu)
+	{
+		if (ppu.owner_pid != 1)
+		{
+			return;
+		}
+
+		total++;
+
+		const auto [status, wait_id] = lv2_obj::ppu_state(&ppu, false, false);
+		const auto wait = find_vsh_pid1_event_wait_context(ppu);
+		if (wait.queue_id)
+		{
+			waiting_on_queue++;
+		}
+
+		const auto state_flags = +ppu.state.load();
+		const auto prio = ppu.prio.load();
+
+		MPDBG_LOG(sys_event, "VSH_PID1_THREAD_SNAPSHOT: tid=0x%x name=%s status=%u wait_id=0x%x state=0x%llx cia=0x%x lr=0x%llx entry=0x%x rtoc=0x%x gpr3=0x%llx gpr4=0x%llx prio=%lld stack=0x%x stack_size=0x%x current=%s last=%s wait_queue=0x%x wait_key=0x%llx wait_qname=0x%llx wait_queued=%u",
+			id, ppu.get_name(), static_cast<u32>(status), wait_id, state_flags, ppu.cia, ppu.lr,
+			static_cast<u32>(ppu.entry_func.addr), static_cast<u32>(ppu.entry_func.rtoc), ppu.gpr[3], ppu.gpr[4],
+			static_cast<s64>(prio.prio), ppu.stack_addr, ppu.stack_size,
+			ppu.current_function ? ppu.current_function : "", ppu.last_function ? ppu.last_function : "",
+			wait.queue_id, wait.queue_key, wait.queue_name, wait.queued);
+	});
+
+	MPDBG_LOG(sys_event, "VSH_PID1_THREAD_SNAPSHOT: phase=end reason=%s total=%u waiting_on_queue=%u",
+		reason, total, waiting_on_queue);
+}
+
+void request_vsh_pid1_delayed_snapshot(const char* reason)
+{
+	const u32 old = g_vsh_delayed_snapshot_request.exchange(1);
+	MPDBG_LOG(sys_event, "VSH_PID1_THREAD_SNAPSHOT: phase=request_delayed reason=%s old=%u active_pid=%u input_pid=%u present_pid=%u",
+		reason, old, Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid());
+}
+
+void service_vsh_pid1_delayed_snapshot(ppu_thread& ppu, const char* reason)
+{
+	if (ppu.owner_pid != 1)
+	{
+		return;
+	}
+
+	if (g_vsh_delayed_snapshot_request.exchange(0))
+	{
+		dump_vsh_pid1_threads_after_mcore(reason);
+	}
+}
+
+
+static vsh_mcore_cmd_object_dump dump_vsh_mcore_cmd_object(u32 ptr)
+{
+	vsh_mcore_cmd_object_dump dump{};
+	dump.ptr = ptr;
+	dump.ok20 = ptr && vm::check_addr<0x20>(ptr);
+	dump.ok30 = ptr && vm::check_addr<0x30>(ptr);
+
+	if (dump.ok20)
+	{
+		dump.w00 = static_cast<u32>(vm::read32(ptr + 0x00));
+		dump.w04 = static_cast<u32>(vm::read32(ptr + 0x04));
+		dump.w08 = static_cast<u32>(vm::read32(ptr + 0x08));
+		dump.w0c = static_cast<u32>(vm::read32(ptr + 0x0c));
+		dump.w10 = static_cast<u32>(vm::read32(ptr + 0x10));
+		dump.w14 = static_cast<u32>(vm::read32(ptr + 0x14));
+		dump.w18 = static_cast<u32>(vm::read32(ptr + 0x18));
+		dump.w1c = static_cast<u32>(vm::read32(ptr + 0x1c));
+		dump.inner_ok = dump.w10 && vm::check_addr<0x20>(dump.w10);
+	}
+
+	if (dump.inner_ok)
+	{
+		dump.i00 = static_cast<u32>(vm::read32(dump.w10 + 0x00));
+		dump.i04 = static_cast<u32>(vm::read32(dump.w10 + 0x04));
+		dump.i08 = static_cast<u32>(vm::read32(dump.w10 + 0x08));
+		dump.i0c = static_cast<u32>(vm::read32(dump.w10 + 0x0c));
+		dump.i10 = static_cast<u32>(vm::read32(dump.w10 + 0x10));
+		dump.i14 = static_cast<u32>(vm::read32(dump.w10 + 0x14));
+		dump.i18 = static_cast<u32>(vm::read32(dump.w10 + 0x18));
+		dump.i1c = static_cast<u32>(vm::read32(dump.w10 + 0x1c));
+	}
+
+	return dump;
+}
+
+static u32 find_vsh_mcore_shm_base()
+{
+	u32 base_addr = 0;
+
+	idm::select<lv2_obj, lv2_memory>([&](u32, lv2_memory& mem)
+	{
+		if (base_addr || mem.key != 0x8005911000000020ull)
+		{
+			return;
+		}
+
+		if (const auto shm = mem.shm.load())
+		{
+			base_addr = vm::get_shm_addr(*shm);
+		}
+	});
+
+	return base_addr;
+}
+
+static CellError send_vsh_mcore_host_response(lv2_event_queue& child_queue, u64 command, u64 command_data2, u64 command_data3)
+{
+	constexpr u64 base_key = 0x8005911000000020ull;
+	constexpr u64 parent_queue_key = base_key + 2;
+	constexpr u64 child_source = base_key + 5;
+	constexpr u32 object_offset = 0x1ff00;
+	constexpr u32 generic_object_offset = 0x1ffe0;
+	constexpr u32 transfer_complete_object_offset = 0x1ffc0;
+	constexpr u32 transfer_out0_object_offset = 0x1ffa0;
+	constexpr u32 transfer_out1_object_offset = 0x1ff80;
+	constexpr u32 transfer_out0_payload_offset = 0x1ff60;
+	constexpr u32 object_size = 8;
+	constexpr u32 transfer_object_size = 0x18;
+	static atomic_t<u32> s_mcore_transfer_stage = 0;
+	static atomic_t<u32> s_mcore_transfer_packets = 0;
+
+	auto parent_queue = lv2_event_queue::find(parent_queue_key);
+	if (!parent_queue)
+	{
+		MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: result=0x%x reason=missing_parent_queue child_queue=0x%x child_key=0x%llx command=0x%llx data2=0x%llx data3=0x%llx",
+			static_cast<u32>(CELL_ESRCH), child_queue.id, child_queue.key, command, command_data2, command_data3);
+		return CELL_ESRCH;
+	}
+
+	if (command == 3 && command_data2 == 0 && command_data3 == 0)
+	{
+		const u32 shm_base = find_vsh_mcore_shm_base();
+		const u32 object_addr = shm_base + object_offset;
+
+		if (!shm_base || !vm::check_addr<8>(object_addr))
+		{
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: result=0x%x reason=shared_memory_lookup command=0x%llx shm_base=0x%x object_addr=0x%x child_queue=0x%x parent_queue=0x%x",
+				static_cast<u32>(CELL_ESRCH), command, shm_base, object_addr, child_queue.id, parent_queue->id);
+			return CELL_ESRCH;
+		}
+
+		vm::write32(object_addr + 0, object_size);
+		vm::write32(object_addr + 4, 0);
+
+		bool notified_thread = false;
+		const CellError result = parent_queue->send(child_source, 0, object_size, object_offset, &notified_thread);
+		MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=reply_object child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx shm_base=0x%x object_addr=0x%x data1=0x0 data2=0x%x data3=0x%x result=0x%x notified=%d",
+			child_queue.id, parent_queue->id, child_source, command, shm_base, object_addr, object_size, object_offset, static_cast<u32>(result), notified_thread);
+		return result;
+	}
+
+	if (command == 1)
+	{
+		const u32 transfer_stage = s_mcore_transfer_stage.load();
+		if (transfer_stage)
+		{
+			if (command_data2 != 0 || command_data3 != 0)
+			{
+				const u32 raw_ptr = static_cast<u32>(command_data3);
+				const auto raw = dump_vsh_mcore_cmd_object(raw_ptr);
+				const u32 shm_base = find_vsh_mcore_shm_base();
+				const u32 translated_ptr = shm_base + raw_ptr;
+				const auto translated = dump_vsh_mcore_cmd_object(translated_ptr);
+
+				MPDBG_LOG(sys_event, "VSH_MCORE_CMD1_TRANSFER_OBJECT: mode=raw ptr=0x%x data2=0x%llx ok20=%d ok30=%d w00=0x%x w04=0x%x w08=0x%x w0c=0x%x w10=0x%x w14=0x%x w18=0x%x w1c=0x%x inner_ok=%d i00=0x%x i04=0x%x i08=0x%x i0c=0x%x i10=0x%x i14=0x%x i18=0x%x i1c=0x%x",
+					raw.ptr, command_data2, raw.ok20, raw.ok30, raw.w00, raw.w04, raw.w08, raw.w0c, raw.w10, raw.w14, raw.w18, raw.w1c, raw.inner_ok, raw.i00, raw.i04, raw.i08, raw.i0c, raw.i10, raw.i14, raw.i18, raw.i1c);
+				MPDBG_LOG(sys_event, "VSH_MCORE_CMD1_TRANSFER_OBJECT: mode=translated shm_base=0x%x data3=0x%x ptr=0x%x data2=0x%llx ok20=%d ok30=%d w00=0x%x w04=0x%x w08=0x%x w0c=0x%x w10=0x%x w14=0x%x w18=0x%x w1c=0x%x inner_ok=%d i00=0x%x i04=0x%x i08=0x%x i0c=0x%x i10=0x%x i14=0x%x i18=0x%x i1c=0x%x",
+					shm_base, raw_ptr, translated.ptr, command_data2, translated.ok20, translated.ok30, translated.w00, translated.w04, translated.w08, translated.w0c, translated.w10, translated.w14, translated.w18, translated.w1c, translated.inner_ok, translated.i00, translated.i04, translated.i08, translated.i0c, translated.i10, translated.i14, translated.i18, translated.i1c);
+				const u64 payload_offset = (static_cast<u64>(translated.w10) << 32) | translated.w14;
+				const u32 payload_addr = shm_base + static_cast<u32>(payload_offset);
+				const bool payload_ok = shm_base && payload_offset && vm::check_addr<0x20>(payload_addr);
+				MPDBG_LOG(sys_event, "VSH_MCORE_CMD1_TRANSFER_PAYLOAD: shm_base=0x%x payload_offset=0x%llx payload_addr=0x%x payload_ok=%d p00=0x%x p04=0x%x p08=0x%x p0c=0x%x p10=0x%x p14=0x%x p18=0x%x p1c=0x%x",
+					shm_base, payload_offset, payload_addr, payload_ok,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x00)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x04)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x08)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x0c)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x10)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x14)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x18)) : 0,
+					payload_ok ? static_cast<u32>(vm::read32(payload_addr + 0x1c)) : 0);
+
+				bool notified_thread = false;
+				const CellError result = parent_queue->send(child_source, 1, 0, 0, &notified_thread);
+				const u32 transfer_packets = s_mcore_transfer_packets.fetch_add(1) + 1;
+				MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=reply_transfer_ack child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx command_data2=0x%llx command_data3=0x%llx stage=%u packets=%u data1=0x1 data2=0x0 data3=0x0 result=0x%x notified=%d",
+					child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3, transfer_stage, transfer_packets, static_cast<u32>(result), notified_thread);
+				return result;
+			}
+
+			if (transfer_stage == 2 || transfer_stage == 3)
+			{
+				const u32 shm_base = find_vsh_mcore_shm_base();
+				const u32 transfer_object_offset = transfer_stage == 2 ? transfer_out0_object_offset : transfer_out1_object_offset;
+				const u32 object_addr = shm_base + transfer_object_offset;
+
+				if (!shm_base || !vm::check_addr<transfer_object_size>(object_addr))
+				{
+					MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: result=0x%x reason=shared_memory_lookup_transfer_out command=0x%llx shm_base=0x%x object_addr=0x%x child_queue=0x%x parent_queue=0x%x stage=%u packets=%u",
+						static_cast<u32>(CELL_ESRCH), command, shm_base, object_addr, child_queue.id, parent_queue->id, transfer_stage, s_mcore_transfer_packets.load());
+					return CELL_ESRCH;
+				}
+
+				// 0x411 returns no first output and carries its small type-6 result
+				// through the second output descriptor.
+				if (transfer_stage == 2)
+				{
+					vm::write32(object_addr + 0x00, 0);
+					vm::write32(object_addr + 0x04, 1);
+					vm::write32(object_addr + 0x08, 0);
+					vm::write32(object_addr + 0x0c, 0);
+					vm::write64(object_addr + 0x10, 0);
+				}
+				else
+				{
+					const u32 payload_addr = shm_base + transfer_out0_payload_offset;
+					if (!vm::check_addr<object_size>(payload_addr))
+					{
+						MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: result=0x%x reason=shared_memory_lookup_transfer_out_payload command=0x%llx shm_base=0x%x payload_addr=0x%x child_queue=0x%x parent_queue=0x%x stage=%u packets=%u",
+							static_cast<u32>(CELL_ESRCH), command, shm_base, payload_addr, child_queue.id, parent_queue->id, transfer_stage, s_mcore_transfer_packets.load());
+						return CELL_ESRCH;
+					}
+
+					vm::write32(payload_addr + 0x00, 6);
+					vm::write32(payload_addr + 0x04, 0x44);
+					vm::write32(object_addr + 0x00, object_size);
+					vm::write32(object_addr + 0x04, 0);
+					vm::write32(object_addr + 0x08, object_size);
+					vm::write32(object_addr + 0x0c, 0);
+					vm::write64(object_addr + 0x10, transfer_out0_payload_offset);
+				}
+
+				bool notified_thread = false;
+				const CellError result = parent_queue->send(child_source, 1, transfer_object_size, transfer_object_offset, &notified_thread);
+				MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=reply_transfer_out child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx command_data2=0x%llx command_data3=0x%llx shm_base=0x%x object_addr=0x%x stage=%u packets=%u payload_offset=0x%x data1=0x1 data2=0x%x data3=0x%x result=0x%x notified=%d",
+					child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3, shm_base, object_addr, transfer_stage, s_mcore_transfer_packets.load(), transfer_stage == 3 ? transfer_out0_payload_offset : 0, transfer_object_size, transfer_object_offset, static_cast<u32>(result), notified_thread);
+
+				if (!result)
+				{
+					s_mcore_transfer_stage = transfer_stage == 2 ? 3 : 4;
+				}
+
+				return result;
+			}
+
+			if (transfer_stage == 4)
+			{
+				s_mcore_transfer_stage = 0;
+				g_vsh_mcore_keep_active_after_async = 1;
+				MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=consume_transfer_out_ack child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx command_data2=0x%llx command_data3=0x%llx stage=%u result=0x%x active=%u",
+					child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3, transfer_stage, static_cast<u32>(CELL_OK), Emu.current_process().pid());
+				log_vsh_paf_globals("mcore_transfer_out_ack");
+				dump_vsh_pid1_threads_after_mcore("mcore_transfer_out_ack");
+				return {};
+			}
+
+			const u32 shm_base = find_vsh_mcore_shm_base();
+			const u32 object_addr = shm_base + transfer_complete_object_offset;
+
+			if (!shm_base || !vm::check_addr<8>(object_addr))
+			{
+				MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: result=0x%x reason=shared_memory_lookup_transfer_complete command=0x%llx shm_base=0x%x object_addr=0x%x child_queue=0x%x parent_queue=0x%x stage=%u packets=%u",
+					static_cast<u32>(CELL_ESRCH), command, shm_base, object_addr, child_queue.id, parent_queue->id, transfer_stage, s_mcore_transfer_packets.load());
+				return CELL_ESRCH;
+			}
+
+			vm::write32(object_addr + 0, object_size);
+			vm::write32(object_addr + 4, 0);
+
+			bool notified_thread = false;
+			const CellError result = parent_queue->send(child_source, 0, object_size, transfer_complete_object_offset, &notified_thread);
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=reply_transfer_complete child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx command_data2=0x%llx command_data3=0x%llx shm_base=0x%x object_addr=0x%x stage=%u packets=%u data1=0x0 data2=0x%x data3=0x%x result=0x%x notified=%d",
+				child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3, shm_base, object_addr, transfer_stage, s_mcore_transfer_packets.load(), object_size, transfer_complete_object_offset, static_cast<u32>(result), notified_thread);
+			s_mcore_transfer_stage = result ? 0 : 2;
+			s_mcore_transfer_packets = 0;
+			return result;
+		}
+
+		const u32 shm_base = find_vsh_mcore_shm_base();
+		const u32 object_addr = shm_base + generic_object_offset;
+		const u32 status = command_data2 == 0 && command_data3 == 0 ? 0 : 7;
+
+		if (!shm_base || !vm::check_addr<8>(object_addr))
+		{
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: result=0x%x reason=shared_memory_lookup command=0x%llx shm_base=0x%x object_addr=0x%x child_queue=0x%x parent_queue=0x%x",
+				static_cast<u32>(CELL_ESRCH), command, shm_base, object_addr, child_queue.id, parent_queue->id);
+			return CELL_ESRCH;
+		}
+
+		vm::write32(object_addr + 0, object_size);
+		vm::write32(object_addr + 4, status);
+
+		bool notified_thread = false;
+		const CellError result = parent_queue->send(child_source, 0, object_size, generic_object_offset, &notified_thread);
+		MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=reply_generic_object child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx command_data2=0x%llx command_data3=0x%llx shm_base=0x%x object_addr=0x%x status=0x%x data1=0x0 data2=0x%x data3=0x%x result=0x%x notified=%d",
+			child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3, shm_base, object_addr, status, object_size, generic_object_offset, static_cast<u32>(result), notified_thread);
+		return result;
+	}
+
+	if (command == 5)
+	{
+		bool notified_thread = false;
+		const CellError result = parent_queue->send(child_source, 0, 0, 0, &notified_thread);
+		if (!result)
+		{
+			s_mcore_transfer_stage = 1;
+			s_mcore_transfer_packets = 0;
+		}
+		MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=reply_ack child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx data2=0x%llx data3=0x%llx result=0x%x notified=%d",
+			child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3, static_cast<u32>(result), notified_thread);
+		return result;
+	}
+
+	MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=unhandled child_queue=0x%x parent_queue=0x%x source=0x%llx command=0x%llx data2=0x%llx data3=0x%llx",
+		child_queue.id, parent_queue->id, child_source, command, command_data2, command_data3);
+	return CELL_EINVAL;
+}
+
+static void schedule_vsh_mcore_host_response(u64 command, u64 command_data2, u64 command_data3)
+{
+	constexpr u64 child_queue_key = 0x8005911000000024ull;
+
+	MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=schedule_async command=0x%llx data2=0x%llx data3=0x%llx active=%u",
+		command, command_data2, command_data3, Emu.current_process().pid());
+
+	std::thread([command, command_data2, command_data3]()
+	{
+		std::this_thread::sleep_for(std::chrono::microseconds{1000});
+
+		const u32 restore_active_pid = Emu.current_process().pid();
+		const bool switched_active = restore_active_pid != 1;
+		if (switched_active)
+		{
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=async_active_switch from_pid=%u to_pid=1 command=0x%llx data2=0x%llx data3=0x%llx",
+				restore_active_pid, command, command_data2, command_data3);
+			Emu.set_active_process(1, false, true, false);
+		}
+
+		CellError result = CELL_ESRCH;
+		u32 child_queue_id = 0;
+
+		auto child_queue = lv2_event_queue::find(child_queue_key);
+		if (child_queue)
+		{
+			child_queue_id = child_queue->id;
+			result = send_vsh_mcore_host_response(*child_queue, command, command_data2, command_data3);
+		}
+		else
+		{
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=async_missing_child_queue command=0x%llx data2=0x%llx data3=0x%llx result=0x%x",
+				command, command_data2, command_data3, static_cast<u32>(CELL_ESRCH));
+		}
+
+		const bool keep_active = g_vsh_mcore_keep_active_after_async.exchange(0) != 0;
+
+		if (switched_active && !keep_active && Emu.current_process().pid() != restore_active_pid)
+		{
+			Emu.set_active_process(restore_active_pid, false, true, false);
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=async_active_restore to_pid=%u command=0x%llx data2=0x%llx data3=0x%llx",
+				restore_active_pid, command, command_data2, command_data3);
+		}
+		else if (keep_active)
+		{
+			MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=async_active_keep active_pid=%u skipped_restore_pid=%u command=0x%llx data2=0x%llx data3=0x%llx",
+				Emu.current_process().pid(), restore_active_pid, command, command_data2, command_data3);
+		}
+
+		MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=async_response_done child_queue=0x%x command=0x%llx data2=0x%llx data3=0x%llx result=0x%x",
+			child_queue_id, command, command_data2, command_data3, static_cast<u32>(result));
+	}).detach();
 }
 
 lv2_event_queue::lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64 ipc_key) noexcept
@@ -128,13 +595,29 @@ void lv2_event_port::save(utils::serial& ar)
 
 shared_ptr<lv2_event_queue> lv2_event_queue::find(u64 ipc_key)
 {
+	ppu_thread* trace_ppu = get_vsh_ppu_for_event_trace();
+
 	if (ipc_key == SYS_EVENT_QUEUE_LOCAL)
 	{
+		if (trace_ppu)
+		{
+			MPDBG_LOG(sys_event, "VSH_LV2_EVENT_QUEUE_LOOKUP: queue_id=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx found=0 local=1",
+				0, ipc_key, 0, trace_ppu->owner_pid, trace_ppu->cia, trace_ppu->lr);
+		}
+
 		// Invalid IPC key
 		return {};
 	}
 
-	return fxo::get<ipc_manager<lv2_event_queue, u64>>().get(ipc_key);
+	auto queue = fxo::get<ipc_manager<lv2_event_queue, u64>>().get(ipc_key);
+
+	if (trace_ppu)
+	{
+		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_QUEUE_LOOKUP: queue_id=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx found=%d queued=%zu",
+			queue ? queue->id : 0, ipc_key, queue ? queue->name : 0, trace_ppu->owner_pid, trace_ppu->cia, trace_ppu->lr, !!queue, queue ? queue->events.size() : 0);
+	}
+
+	return queue;
 }
 
 extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<shared_ptr<named_thread<spu_thread>>, 8>& notify_spus);
@@ -313,8 +796,8 @@ error_code sys_event_queue_create(cpu_thread& cpu, vm::ptr<u32> equeue_id, vm::p
 	{
 		MPDBG_LOG(sys_event, "EVENT_QUEUE_CREATE: owner_pid=%u id=0x%x name=%s equeue_ptr=0x%x attr=0x%x equeue_id=0x%x ipc_key=0x%llx size=%d protocol=0x%x type=0x%x qname=0x%llx ret=0x%x",
 			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), equeue_id.addr(), attr.addr(), *equeue_id, ipc_key, size, protocol, type, name, static_cast<u32>(CELL_OK));
-		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_QUEUE_CREATE: queue_id=0x%x key=0x%llx qname=0x%llx owner_pid=%u",
-			*equeue_id, ipc_key, name, trace_ppu->owner_pid);
+		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_QUEUE_CREATE: queue_id=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx",
+			*equeue_id, ipc_key, name, trace_ppu->owner_pid, trace_ppu->cia, trace_ppu->lr);
 	}
 
 	return CELL_OK;
@@ -728,8 +1211,8 @@ error_code sys_event_port_create(cpu_thread& cpu, vm::ptr<u32> eport_id, s32 por
 		sys_event.error("sys_event_port_create(): unknown port type (%d)", port_type);
 		if (trace_ppu)
 		{
-			MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x port_type=%d port_name=0x%llx ret=0x%x",
-				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), port_type, name, static_cast<u32>(CELL_EINVAL));
+			MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x port_type=%d port_name=0x%llx ret=0x%x cia=0x%x lr=0x%llx",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), port_type, name, static_cast<u32>(CELL_EINVAL), trace_ppu->cia, trace_ppu->lr);
 		}
 
 		return CELL_EINVAL;
@@ -741,8 +1224,10 @@ error_code sys_event_port_create(cpu_thread& cpu, vm::ptr<u32> eport_id, s32 por
 		*eport_id = id;
 		if (trace_ppu)
 		{
-			MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x eport_id=0x%x port_type=%d port_name=0x%llx ret=0x%x",
-				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), *eport_id, port_type, name, static_cast<u32>(CELL_OK));
+			MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x eport_id=0x%x port_type=%d port_name=0x%llx ret=0x%x cia=0x%x lr=0x%llx",
+				trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), *eport_id, port_type, name, static_cast<u32>(CELL_OK), trace_ppu->cia, trace_ppu->lr);
+			MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CREATE: port_id=0x%x port_type=%d port_name=0x%llx owner_pid=%u cia=0x%x lr=0x%llx",
+				*eport_id, port_type, name, trace_ppu->owner_pid, trace_ppu->cia, trace_ppu->lr);
 		}
 
 		return CELL_OK;
@@ -750,8 +1235,8 @@ error_code sys_event_port_create(cpu_thread& cpu, vm::ptr<u32> eport_id, s32 por
 
 	if (trace_ppu)
 	{
-		MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x port_type=%d port_name=0x%llx ret=0x%x",
-			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), port_type, name, static_cast<u32>(CELL_EAGAIN));
+		MPDBG_LOG(sys_event, "EVENT_PORT_CREATE: owner_pid=%u id=0x%x name=%s eport_ptr=0x%x port_type=%d port_name=0x%llx ret=0x%x cia=0x%x lr=0x%llx",
+			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id.addr(), port_type, name, static_cast<u32>(CELL_EAGAIN), trace_ppu->cia, trace_ppu->lr);
 	}
 
 	return CELL_EAGAIN;
@@ -839,8 +1324,8 @@ error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeu
 	{
 		MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_LOCAL: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x qname=0x%llx key=0x%llx ret=0x%x",
 			trace_ppu->owner_pid, trace_ppu->id, trace_ppu->get_name(), eport_id, equeue_id, qname, qkey, static_cast<u32>(CELL_OK));
-		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_LOCAL: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u",
-			eport_id, equeue_id, qkey, qname, trace_ppu->owner_pid);
+		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_LOCAL: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx",
+			eport_id, equeue_id, qkey, qname, trace_ppu->owner_pid, trace_ppu->cia, trace_ppu->lr);
 	}
 
 	return CELL_OK;
@@ -856,8 +1341,10 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	{
 		if (ppu.owner_pid == 1)
 		{
-			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x ipc_key=0x%llx ret=0x%x",
-				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, ipc_key, static_cast<u32>(CELL_EINVAL));
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x ipc_key=0x%llx ret=0x%x cia=0x%x lr=0x%llx",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, ipc_key, static_cast<u32>(CELL_EINVAL), ppu.cia, ppu.lr);
+			MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_IPC: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx ret=0x%x missing_port=0 missing_queue=1",
+				eport_id, 0, ipc_key, 0, ppu.owner_pid, ppu.cia, ppu.lr, static_cast<u32>(CELL_EINVAL));
 		}
 
 		return CELL_EINVAL;
@@ -873,8 +1360,10 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	{
 		if (ppu.owner_pid == 1)
 		{
-			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x ipc_key=0x%llx ret=0x%x missing_port=%d missing_queue=%d",
-				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, ipc_key, static_cast<u32>(CELL_ESRCH), !port, !queue);
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x ipc_key=0x%llx ret=0x%x missing_port=%d missing_queue=%d cia=0x%x lr=0x%llx",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, ipc_key, static_cast<u32>(CELL_ESRCH), !port, !queue, ppu.cia, ppu.lr);
+			MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_IPC: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx ret=0x%x missing_port=%d missing_queue=%d",
+				eport_id, queue ? queue->id : 0, ipc_key, queue ? queue->name : 0, ppu.owner_pid, ppu.cia, ppu.lr, static_cast<u32>(CELL_ESRCH), !port, !queue);
 		}
 
 		return CELL_ESRCH;
@@ -884,8 +1373,10 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	{
 		if (ppu.owner_pid == 1)
 		{
-			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx port_type=%d ret=0x%x",
-				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, queue->id, ipc_key, queue->name, port->type, static_cast<u32>(CELL_EINVAL));
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx port_type=%d ret=0x%x cia=0x%x lr=0x%llx",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, queue->id, ipc_key, queue->name, port->type, static_cast<u32>(CELL_EINVAL), ppu.cia, ppu.lr);
+			MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_IPC: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx ret=0x%x port_type=%d",
+				eport_id, queue->id, ipc_key, queue->name, ppu.owner_pid, ppu.cia, ppu.lr, static_cast<u32>(CELL_EINVAL), port->type);
 		}
 
 		return CELL_EINVAL;
@@ -895,8 +1386,10 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	{
 		if (ppu.owner_pid == 1)
 		{
-			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx ret=0x%x already=1",
-				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, queue->id, ipc_key, queue->name, static_cast<u32>(CELL_EISCONN));
+			MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx ret=0x%x already=1 cia=0x%x lr=0x%llx",
+				ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, queue->id, ipc_key, queue->name, static_cast<u32>(CELL_EISCONN), ppu.cia, ppu.lr);
+			MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_IPC: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx ret=0x%x already=1",
+				eport_id, queue->id, ipc_key, queue->name, ppu.owner_pid, ppu.cia, ppu.lr, static_cast<u32>(CELL_EISCONN));
 		}
 
 		return CELL_EISCONN;
@@ -908,8 +1401,10 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 
 	if (ppu.owner_pid == 1)
 	{
-		MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx ret=0x%x",
-			ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, qid, ipc_key, qname, static_cast<u32>(CELL_OK));
+		MPDBG_LOG(sys_event, "EVENT_PORT_CONNECT_IPC: owner_pid=%u id=0x%x name=%s eport_id=0x%x equeue_id=0x%x ipc_key=0x%llx qname=0x%llx ret=0x%x cia=0x%x lr=0x%llx",
+			ppu.owner_pid, ppu.id, ppu.get_name(), eport_id, qid, ipc_key, qname, static_cast<u32>(CELL_OK), ppu.cia, ppu.lr);
+		MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_CONNECT_IPC: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx owner_pid=%u cia=0x%x lr=0x%llx ret=0x%x",
+			eport_id, qid, ipc_key, qname, ppu.owner_pid, ppu.cia, ppu.lr, static_cast<u32>(CELL_OK));
 	}
 
 	return CELL_OK;
@@ -979,8 +1474,30 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 					ppu ? ppu->owner_pid : 0, ppu ? ppu->id : 0, ppu ? ppu->get_name() : "<host>", eport_id,
 					port.queue->id, port.queue->name, port.queue->key, target_vsh ? target_vsh->id : 0, target_vsh ? target_vsh->get_name() : "",
 					source, data1, data2, data3, port.queue->events.size(), !!port.queue->pq);
-				MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_SEND: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx source_pid=%u",
-					eport_id, port.queue->id, port.queue->key, port.queue->name, data1, data2, data3, ppu ? ppu->owner_pid : process_getpid());
+				MPDBG_LOG(sys_event, "VSH_LV2_EVENT_PORT_SEND: port_id=0x%x target_queue=0x%x key=0x%llx qname=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx source_pid=%u cia=0x%x lr=0x%llx",
+					eport_id, port.queue->id, port.queue->key, port.queue->name, data1, data2, data3, ppu ? ppu->owner_pid : process_getpid(), ppu ? ppu->cia : 0, ppu ? ppu->lr : 0);
+
+				if (port.queue->key == 0x8005911000000024ull && source == 0x8005911000000023ull && data1 == 5)
+				{
+					const u32 raw_ptr = static_cast<u32>(data3);
+					const auto raw = dump_vsh_mcore_cmd_object(raw_ptr);
+					const u32 shm_base = find_vsh_mcore_shm_base();
+					const u32 translated_ptr = shm_base + raw_ptr;
+					const auto translated = dump_vsh_mcore_cmd_object(translated_ptr);
+
+					MPDBG_LOG(sys_event, "VSH_MCORE_CMD5_OBJECT: mode=raw ptr=0x%x ok20=%d ok30=%d w00=0x%x w04=0x%x w08=0x%x w0c=0x%x w10=0x%x w14=0x%x w18=0x%x w1c=0x%x inner_ok=%d i00=0x%x i04=0x%x i08=0x%x i0c=0x%x i10=0x%x i14=0x%x i18=0x%x i1c=0x%x",
+						raw.ptr, raw.ok20, raw.ok30, raw.w00, raw.w04, raw.w08, raw.w0c, raw.w10, raw.w14, raw.w18, raw.w1c, raw.inner_ok, raw.i00, raw.i04, raw.i08, raw.i0c, raw.i10, raw.i14, raw.i18, raw.i1c);
+					MPDBG_LOG(sys_event, "VSH_MCORE_CMD5_OBJECT: mode=translated shm_base=0x%x data3=0x%x ptr=0x%x ok20=%d ok30=%d w00=0x%x w04=0x%x w08=0x%x w0c=0x%x w10=0x%x w14=0x%x w18=0x%x w1c=0x%x inner_ok=%d i00=0x%x i04=0x%x i08=0x%x i0c=0x%x i10=0x%x i14=0x%x i18=0x%x i1c=0x%x",
+						shm_base, raw_ptr, translated.ptr, translated.ok20, translated.ok30, translated.w00, translated.w04, translated.w08, translated.w0c, translated.w10, translated.w14, translated.w18, translated.w1c, translated.inner_ok, translated.i00, translated.i04, translated.i08, translated.i0c, translated.i10, translated.i14, translated.i18, translated.i1c);
+				}
+
+				if (port.queue->key == 0x8005911000000024ull && source == 0x8005911000000023ull)
+				{
+					schedule_vsh_mcore_host_response(data1, data2, data3);
+					MPDBG_LOG(sys_event, "VSH_MCORE_HOST_EVENT: phase=consume_parent_command_async port_id=0x%x child_queue=0x%x source=0x%llx data1=0x%llx data2=0x%llx data3=0x%llx result=0x%x",
+						eport_id, port.queue->id, source, data1, data2, data3, static_cast<u32>(CELL_OK));
+					return {};
+				}
 			}
 
 			return port.queue->send(source, data1, data2, data3, &notified_thread, ppu && port.queue->type == SYS_PPU_QUEUE ? &port : nullptr);

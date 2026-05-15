@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "sys_process.h"
 #include "Emu/multiproc_debug.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Memory/vm_var.h"
 #include "Emu/System.h"
@@ -11,6 +12,7 @@
 
 #include "Crypto/unedat.h"
 #include "Emu/Cell/ErrorCodes.h"
+#include "Emu/Cell/PPUInterpreter.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/PPUCallback.h"
 #include "sys_lwmutex.h"
@@ -64,6 +66,221 @@ std::string_view ps3_process_info_t::get_cellos_appname() const
 LOG_CHANNEL(sys_process);
 
 ps3_process_info_t g_ps3_process_info;
+
+namespace
+{
+	std::mutex g_mcore_spawn_mutex;
+	std::deque<u64> g_mcore_pending_base_keys;
+
+	u64 find_mcore_base_key_in_buffer(u32 addr, u32 size)
+	{
+		if (!addr || !size)
+		{
+			return 0;
+		}
+
+		const u8* data = static_cast<const u8*>(vm::base(addr));
+
+		for (u32 i = 0; i + 18 <= size; i++)
+		{
+			if (data[i] != '0' || (data[i + 1] != 'x' && data[i + 1] != 'X'))
+			{
+				continue;
+			}
+
+			u64 value = 0;
+			bool valid = true;
+
+			for (u32 n = 0; n < 16; n++)
+			{
+				const u8 c = data[i + 2 + n];
+				u8 nybble = 0;
+
+				if (c >= '0' && c <= '9')
+				{
+					nybble = c - '0';
+				}
+				else if (c >= 'a' && c <= 'f')
+				{
+					nybble = c - 'a' + 10;
+				}
+				else if (c >= 'A' && c <= 'F')
+				{
+					nybble = c - 'A' + 10;
+				}
+				else
+				{
+					valid = false;
+					break;
+				}
+
+				value = (value << 4) | nybble;
+			}
+
+			if (valid && (value & 0xffffffff00000000ull) == 0x8005911000000000ull && (value & 0xf) == 0)
+			{
+				return value;
+			}
+		}
+
+		return 0;
+	}
+
+	u64 pop_mcore_pending_base_key()
+	{
+		std::lock_guard lock(g_mcore_spawn_mutex);
+
+		if (g_mcore_pending_base_keys.empty())
+		{
+			return 0;
+		}
+
+		const u64 key = g_mcore_pending_base_keys.front();
+		g_mcore_pending_base_keys.pop_front();
+		return key;
+	}
+
+	static void sys_process_mcore_host_spawn_callback(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, ppu_intrp_func*)
+	{
+		const u64 base_key = pop_mcore_pending_base_key();
+
+		if (!base_key)
+		{
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=no_pending_key active=%u",
+				CELL_ESRCH, Emu.current_process().pid());
+			return;
+		}
+
+		const u64 parent_queue_key = base_key + 2;
+		const u64 child_queue_key = base_key + 4;
+		const u64 child_port_name = base_key + 5;
+
+		MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: phase=start base_key=0x%llx parent_queue_key=0x%llx child_queue_key=0x%llx child_port_name=0x%llx active=%u",
+			base_key, parent_queue_key, child_queue_key, child_port_name, Emu.current_process().pid());
+
+		bool parent_queue_seen = false;
+
+		for (u32 attempt = 0; attempt < 1000; attempt++)
+		{
+			if (lv2_event_queue::find(parent_queue_key))
+			{
+				parent_queue_seen = true;
+				break;
+			}
+
+			thread_ctrl::wait_for(1000);
+		}
+
+		if (!parent_queue_seen)
+		{
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=parent_queue_timeout base_key=0x%llx parent_queue_key=0x%llx active=%u",
+				CELL_ETIMEDOUT, base_key, parent_queue_key, Emu.current_process().pid());
+			return;
+		}
+
+		vm::var<sys_event_queue_attribute_t> attr;
+		attr->protocol = SYS_SYNC_PRIORITY;
+		attr->type = SYS_PPU_QUEUE;
+		attr->name_u64 = 0x766d335f;
+
+		vm::var<u32> child_queue_id;
+		error_code result = sys_event_queue_create(ppu, child_queue_id, attr, child_queue_key, 4);
+		if (result < 0 && !lv2_event_queue::find(child_queue_key))
+		{
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=child_queue_create base_key=0x%llx child_queue_key=0x%llx active=%u",
+				static_cast<u32>(static_cast<s32>(result)), base_key, child_queue_key, Emu.current_process().pid());
+			return;
+		}
+
+		vm::var<u32> child_port_id;
+		result = sys_event_port_create(ppu, child_port_id, SYS_EVENT_PORT_IPC, child_port_name);
+		if (result < 0)
+		{
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=child_port_create base_key=0x%llx child_port_name=0x%llx active=%u",
+				static_cast<u32>(static_cast<s32>(result)), base_key, child_port_name, Emu.current_process().pid());
+			return;
+		}
+
+		result = sys_event_port_connect_ipc(ppu, *child_port_id, parent_queue_key);
+		if (result < 0)
+		{
+			sys_event_port_destroy(ppu, *child_port_id);
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=connect_parent base_key=0x%llx port_id=0x%x parent_queue_key=0x%llx active=%u",
+				static_cast<u32>(static_cast<s32>(result)), base_key, *child_port_id, parent_queue_key, Emu.current_process().pid());
+			return;
+		}
+
+		result = sys_event_port_send(*child_port_id, 0, 0, 0);
+		if (result < 0)
+		{
+			sys_event_port_disconnect(ppu, *child_port_id);
+			sys_event_port_destroy(ppu, *child_port_id);
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=send_parent base_key=0x%llx port_id=0x%x parent_queue_key=0x%llx active=%u",
+				static_cast<u32>(static_cast<s32>(result)), base_key, *child_port_id, parent_queue_key, Emu.current_process().pid());
+			return;
+		}
+
+		MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: phase=handshake_sent base_key=0x%llx child_queue_id=0x%x child_queue_key=0x%llx child_port_id=0x%x child_port_name=0x%llx active=%u",
+			base_key, *child_queue_id, child_queue_key, *child_port_id, child_port_name, Emu.current_process().pid());
+
+		MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: phase=post_handshake_no_active_switch active_pid=%u input_pid=%u present_pid=%u",
+			Emu.current_process().pid(), Emu.GetInputForegroundPid(), Emu.GetForegroundPresentPid());
+
+		MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x0 reason=event_driven_listener base_key=0x%llx child_queue_key=0x%llx child_port_id=0x%x child_port_name=0x%llx active=%u",
+			base_key, child_queue_key, *child_port_id, child_port_name, Emu.current_process().pid());
+	}
+
+	error_code sys_process_spawn_mcore_host_helper(u64 base_key, u32 prio)
+	{
+		constexpr u32 helper_stack_size = 64 * 1024;
+
+		auto& dct = fxo::get<lv2_memory_container>();
+		if (!dct.take(helper_stack_size))
+		{
+			return CELL_ENOMEM;
+		}
+
+		const vm::addr_t stack_base{vm::alloc(helper_stack_size, vm::stack, 4096)};
+		if (!stack_base)
+		{
+			dct.free(helper_stack_size);
+			return CELL_ENOMEM;
+		}
+
+		ppu_thread_params p{};
+		p.stack_addr = stack_base;
+		p.stack_size = helper_stack_size;
+		p.entry = ppu_func_opd_t{};
+
+		const auto helper = idm::make_ptr<named_thread<ppu_thread>>(p, "mcore_host_spawn", prio, 1);
+		if (!helper)
+		{
+			vm::dealloc(stack_base);
+			dct.free(helper_stack_size);
+			return CELL_EAGAIN;
+		}
+
+		{
+			std::lock_guard lock(g_mcore_spawn_mutex);
+			g_mcore_pending_base_keys.emplace_back(base_key);
+		}
+
+		helper->cmd_list({
+			{ppu_cmd::ptr_call, 0}, std::bit_cast<u64>(&sys_process_mcore_host_spawn_callback),
+			{ppu_cmd::sleep, 0},
+		});
+
+		helper->state.test_and_reset(cpu_flag::stop);
+		ensure(lv2_obj::awake(helper.get()));
+		helper->cmd_notify.store(1);
+		helper->cmd_notify.notify_one();
+
+		MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: phase=queued helper_id=0x%x base_key=0x%llx stack=0x%x active=%u",
+			helper->id, base_key, static_cast<u32>(stack_base), Emu.current_process().pid());
+
+		return CELL_OK;
+	}
+}
 
 s32 process_getpid()
 {
@@ -749,6 +966,36 @@ error_code sys_process_spawns_a_self2(ppu_thread& ppu, vm::ptr<u32> pid, u32 pri
 
 	if (!is_game_launch)
 	{
+		if (vfs_path == "/dev_flash/vsh/module/mcore.self")
+		{
+			u64 base_key = find_mcore_base_key_in_buffer(stack.addr(), stack_size);
+			if (!base_key) base_key = find_mcore_base_key_in_buffer(dbg_data.addr(), 0x200);
+			if (!base_key) base_key = find_mcore_base_key_in_buffer(param_sfo.addr(), 0x200);
+
+			if (!base_key)
+			{
+				sys_process.warning("sys_process_spawns_a_self2: mcore.self helper spawn found no 0x800591... base key");
+				MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x%x reason=no_base_key path=%s active=%u",
+					CELL_ESRCH, vfs_path, Emu.current_process().pid());
+				if (pid) *pid = 0;
+				return CELL_OK;
+			}
+
+			if (base_key != 0x8005911000000020ull)
+			{
+				MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: result=0x0 reason=ignored_probe path=%s base_key=0x%llx active=%u",
+					vfs_path, base_key, Emu.current_process().pid());
+				if (pid) *pid = 0;
+				return CELL_OK;
+			}
+
+			const error_code helper_result = sys_process_spawn_mcore_host_helper(base_key, primary_prio ? primary_prio : 2003);
+			MPDBG_LOG(sys_process, "VSH_MCORE_HOST_SPAWN: path=%s base_key=0x%llx helper_result=0x%x active=%u",
+				vfs_path, base_key, static_cast<u32>(static_cast<s32>(helper_result)), Emu.current_process().pid());
+			if (pid) *pid = 0;
+			return CELL_OK;
+		}
+
 		sys_process.warning("sys_process_spawns_a_self2: not a game launch path, ignoring (helper SELF — would need multi-process support to spawn as child)");
 		if (pid) *pid = 0;
 		return CELL_OK;
