@@ -86,6 +86,8 @@
     <ClCompile Include="Emu\RSX\VK\VKGSRender.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKHelpers.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKOverlays.cpp" />
+    <ClCompile Include="Emu\RSX\VK\VKOverlayCapture.cpp" />
+    <ClCompile Include="Emu\RSX\VK\vk_host_context.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKPipelineCompiler.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKPresent.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKProgramPipeline.cpp" />

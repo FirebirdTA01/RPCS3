@@ -304,6 +304,7 @@
     <ClCompile Include="Emu\Cell\lv2\sys_mmapper.cpp" />
     <ClCompile Include="Emu\Cell\lv2\sys_mutex.cpp" />
     <ClCompile Include="Emu\Cell\lv2\sys_ppu_thread.cpp" />
+    <ClCompile Include="Emu\Cell\lv2\lv2_process.cpp" />
     <ClCompile Include="Emu\Cell\lv2\sys_process.cpp" />
     <ClCompile Include="Emu\Cell\lv2\sys_prx.cpp" />
     <ClCompile Include="Emu\Cell\lv2\sys_rsx.cpp" />

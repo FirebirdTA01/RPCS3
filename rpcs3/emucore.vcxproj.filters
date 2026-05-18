@@ -300,6 +300,9 @@
     <ClCompile Include="Emu\Cell\lv2\sys_ppu_thread.cpp">
       <Filter>Emu\Cell\lv2</Filter>
     </ClCompile>
+    <ClCompile Include="Emu\Cell\lv2\lv2_process.cpp">
+      <Filter>Emu\Cell\lv2</Filter>
+    </ClCompile>
     <ClCompile Include="Emu\Cell\lv2\sys_process.cpp">
       <Filter>Emu\Cell\lv2</Filter>
     </ClCompile>
