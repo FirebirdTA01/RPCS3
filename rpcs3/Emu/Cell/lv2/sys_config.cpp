@@ -151,7 +151,7 @@ lv2_config::~lv2_config() noexcept
 // LV2 Config IO Event
 bool lv2_config_handle::queue_io_event(std::span<const u8> payload)
 {
-	const auto event = make_shared<lv2_config_io_event>(next_io_event_id++, payload);
+	const auto event = stx::make_shared<lv2_config_io_event>(next_io_event_id++, payload);
 
 	{
 		std::lock_guard lock(mutex_io_events);
