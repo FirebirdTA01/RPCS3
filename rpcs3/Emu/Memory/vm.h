@@ -43,14 +43,24 @@ namespace vm
 		u8* base_addr = nullptr;
 		u8* sudo_addr = nullptr;
 		u8* exec_addr = nullptr;
-		std::array<atomic_t<u8>, 0x100'0000> page_flags{};
+		// Guest page-flag table: 4 GiB guest address space / 4 KiB page = 1,048,576 entries.
+		//
+		// These large atomic_t arrays are zero-initialized by the out-of-line vm_handle()
+		// constructor (vm.cpp), NOT by in-class '{}' initializers. A brace value-initializer
+		// here forced MSVC to materialize a per-element initializer for the implicit default
+		// constructor in every TU that includes vm.h (vm_handle is default-constructed as a
+		// sub-object of the global Emu / std::array<lv2_process,2>), exhausting the compiler
+		// heap (error C1060) and the machine's RAM under the parallel build.
+		std::array<atomic_t<u8>, 0x1'0000'0000 / 4096> page_flags;
 
 		// Per-process VM allocator and reservation state, previously held in vm.cpp globals.
-		alignas(4096) u8 reservations[g_reservations_size]{};
-		alignas(4096) atomic_t<u64> shmem[g_shmem_count]{};
-		alignas(64) atomic_t<u64, 128> range_lock_set[g_range_lock_set_count]{};
-		atomic_t<u64, 128> range_lock_bits[2]{};
+		alignas(4096) u8 reservations[g_reservations_size];
+		alignas(4096) atomic_t<u64> shmem[g_shmem_count];
+		alignas(64) atomic_t<u64, 128> range_lock_set[g_range_lock_set_count];
+		atomic_t<u64, 128> range_lock_bits[2];
 		std::vector<std::shared_ptr<block_t>> locations;
+
+		vm_handle(); // Zero-initializes the per-process atomic arrays (defined in vm.cpp)
 
 		bool allocate(); // Allocate host VA for this process's 256MB main RAM
 	};

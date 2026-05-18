@@ -62,6 +62,23 @@ namespace vm
 		return Emu.current_process().vm_handle();
 	}
 
+	vm_handle::vm_handle()
+	{
+		// Zero the large per-process atomic arrays here rather than via in-class
+		// '{}' initializers. A brace value-initializer on these multi-million-element
+		// atomic_t arrays makes MSVC emit a per-element initializer for the implicit
+		// default constructor in *every* TU that includes vm.h (vm_handle is a
+		// sub-object of the global Emu), exhausting the compiler heap (error C1060)
+		// and the machine's RAM under the parallel build. atomic_t<T> is trivially
+		// copyable (static_assert in atomic.hpp), so a flat memset to 0 yields the
+		// same all-zero state as '{}' — identical to what lv2_process::reset() does.
+		std::memset(page_flags.data(), 0, page_flags.size() * sizeof(page_flags[0]));
+		std::memset(reservations, 0, sizeof(reservations));
+		std::memset(shmem, 0, sizeof(shmem));
+		std::memset(range_lock_set, 0, sizeof(range_lock_set));
+		std::memset(range_lock_bits, 0, sizeof(range_lock_bits));
+	}
+
 	bool vm_handle::allocate()
 	{
 		if (base_addr)
